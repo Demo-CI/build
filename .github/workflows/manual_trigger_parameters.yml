@@ -1,7 +1,7 @@
 name: Manual Trigger with JSON Parameters
 
 on:
-  # Manual trigger with inputs
+  # Manual trigger with inputs - can be triggered on any branch
   workflow_dispatch:
     inputs:
       json_parameters:
@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
   
-  # Trigger on pull requests
+  # Trigger on pull requests to main and develop branches
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [main, develop]
