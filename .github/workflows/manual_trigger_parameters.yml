@@ -1,6 +1,7 @@
 name: Manual Trigger with JSON Parameters
 
 on:
+  # Manual trigger with inputs - can be triggered on any branch
   workflow_dispatch:
     inputs:
       json_parameters:
@@ -22,6 +23,15 @@ on:
         required: false
         default: false
         type: boolean
+  
+  # Trigger on pull requests to main and develop branches
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, develop]
+  
+  # Daily schedule at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
 
 jobs:
   process-parameters:
@@ -33,17 +43,60 @@ jobs:
       
     - name: Display input parameters
       run: |
-        echo "=== Workflow Inputs ==="
-        echo "JSON Parameters: ${{ github.event.inputs.json_parameters }}"
-        echo "Environment: ${{ github.event.inputs.environment }}"
-        echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+        echo "=== Workflow Trigger Information ==="
+        echo "Event name: ${{ github.event_name }}"
+        echo "Ref: ${{ github.ref }}"
+        echo "SHA: ${{ github.sha }}"
+        
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "=== Manual Trigger Inputs ==="
+          echo "JSON Parameters: ${{ github.event.inputs.json_parameters }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+        elif [ "${{ github.event_name }}" == "pull_request" ]; then
+          echo "=== Pull Request Information ==="
+          echo "PR Number: ${{ github.event.pull_request.number }}"
+          echo "PR Title: ${{ github.event.pull_request.title }}"
+          echo "PR Author: ${{ github.event.pull_request.user.login }}"
+          echo "Base Branch: ${{ github.event.pull_request.base.ref }}"
+          echo "Head Branch: ${{ github.event.pull_request.head.ref }}"
+        elif [ "${{ github.event_name }}" == "schedule" ]; then
+          echo "=== Scheduled Trigger ==="
+          echo "Triggered by daily schedule at $(date)"
+        fi
         echo "======================="
         
     - name: Parse and validate JSON
       id: parse-json
       run: |
         echo "Parsing JSON parameters..."
-        JSON_INPUT='${{ github.event.inputs.json_parameters }}'
+        
+        # Set default values based on trigger type
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          JSON_INPUT='${{ github.event.inputs.json_parameters }}'
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+        elif [ "${{ github.event_name }}" == "pull_request" ]; then
+          # Default values for PR triggers
+          JSON_INPUT='{"environment": "development", "version": "pr-${{ github.event.pull_request.number }}", "features": ["pr-validation"]}'
+          ENVIRONMENT="development"
+          DRY_RUN="true"
+          echo "Using PR defaults: environment=development, dry_run=true"
+        elif [ "${{ github.event_name }}" == "schedule" ]; then
+          # Default values for scheduled triggers
+          JSON_INPUT='{"environment": "staging", "version": "nightly-$(date +%Y%m%d)", "features": ["health-check", "maintenance"]}'
+          ENVIRONMENT="staging"
+          DRY_RUN="false"
+          echo "Using scheduled defaults: environment=staging, dry_run=false"
+        else
+          # Fallback defaults
+          JSON_INPUT='{"environment": "development", "version": "unknown", "features": []}'
+          ENVIRONMENT="development"
+          DRY_RUN="true"
+          echo "Using fallback defaults"
+        fi
+        
+        echo "JSON Input: $JSON_INPUT"
         
         # Validate JSON format
         if ! echo "$JSON_INPUT" | jq empty 2>/dev/null; then
@@ -52,64 +105,55 @@ jobs:
         fi
         
         # Extract values from JSON
-        ENVIRONMENT=$(echo "$JSON_INPUT" | jq -r '.environment // "not_specified"')
+        JSON_ENVIRONMENT=$(echo "$JSON_INPUT" | jq -r '.environment // "not_specified"')
         VERSION=$(echo "$JSON_INPUT" | jq -r '.version // "not_specified"')
         FEATURES=$(echo "$JSON_INPUT" | jq -r '.features // [] | join(",")')
         
         echo "Parsed values:"
-        echo "Environment: $ENVIRONMENT"
+        echo "Environment: $JSON_ENVIRONMENT"
         echo "Version: $VERSION"
         echo "Features: $FEATURES"
+        echo "Trigger Environment: $ENVIRONMENT"
+        echo "Dry Run: $DRY_RUN"
         
         # Set outputs for use in other steps
-        echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+        echo "environment=$JSON_ENVIRONMENT" >> $GITHUB_OUTPUT
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "features=$FEATURES" >> $GITHUB_OUTPUT
-        
-    - name: Use parsed parameters
-      run: |
-        echo "Using parsed parameters in workflow logic..."
-        echo "Environment: ${{ steps.parse-json.outputs.environment }}"
-        echo "Version: ${{ steps.parse-json.outputs.version }}"
-        echo "Features: ${{ steps.parse-json.outputs.features }}"
-        
-        # Example conditional logic based on parameters
-        if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
-          echo "🔍 DRY RUN MODE - No actual changes will be made"
-        else
-          echo "🚀 LIVE MODE - Changes will be applied"
-        fi
-        
-        # Example environment-specific logic
-        case "${{ steps.parse-json.outputs.environment }}" in
-          "production")
-            echo "📦 Production deployment logic would go here"
-            ;;
-          "staging")
-            echo "🧪 Staging deployment logic would go here"
-            ;;
-          "development")
-            echo "🔧 Development deployment logic would go here"
-            ;;
-          *)
-            echo "🤷 Unknown environment: ${{ steps.parse-json.outputs.environment }}"
-            ;;
-        esac
-        
-        # Example feature flag logic
-        IFS=',' read -ra FEATURE_ARRAY <<< "${{ steps.parse-json.outputs.features }}"
-        for feature in "${FEATURE_ARRAY[@]}"; do
-          echo "✅ Processing feature: $feature"
-        done
-        
+        echo "trigger_environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+        echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
+       
     - name: Summary
       run: |
         echo "=== Workflow Summary ==="
-        echo "Triggered manually with parameters:"
-        echo "- Environment: ${{ github.event.inputs.environment }}"
-        echo "- Dry Run: ${{ github.event.inputs.dry_run }}"
-        echo "- JSON Parameters processed successfully"
+        echo "Trigger Type: ${{ github.event_name }}"
+        
+        case "${{ github.event_name }}" in
+          "workflow_dispatch")
+            echo "Triggered manually with parameters:"
+            echo "- Environment: ${{ github.event.inputs.environment }}"
+            echo "- Dry Run: ${{ github.event.inputs.dry_run }}"
+            echo "- JSON Parameters processed successfully"
+            ;;
+          "pull_request")
+            echo "Triggered by Pull Request #${{ github.event.pull_request.number }}"
+            echo "- Title: ${{ github.event.pull_request.title }}"
+            echo "- Author: ${{ github.event.pull_request.user.login }}"
+            echo "- Base: ${{ github.event.pull_request.base.ref }} ← Head: ${{ github.event.pull_request.head.ref }}"
+            echo "- Dry Run: true (default for PRs)"
+            ;;
+          "schedule")
+            echo "Triggered by daily schedule"
+            echo "- Time: $(date)"
+            echo "- Environment: staging (default for scheduled runs)"
+            echo "- Dry Run: false (maintenance mode)"
+            ;;
+        esac
+        
+        echo ""
+        echo "Processed Parameters:"
         echo "- Parsed Environment: ${{ steps.parse-json.outputs.environment }}"
         echo "- Parsed Version: ${{ steps.parse-json.outputs.version }}"
         echo "- Parsed Features: ${{ steps.parse-json.outputs.features }}"
+        echo "- Effective Dry Run: ${{ steps.parse-json.outputs.dry_run }}"
         echo "======================="
