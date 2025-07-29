@@ -122,65 +122,7 @@ jobs:
         echo "features=$FEATURES" >> $GITHUB_OUTPUT
         echo "trigger_environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
         echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
-        
-    - name: Use parsed parameters
-      run: |
-        echo "Using parsed parameters in workflow logic..."
-        echo "Environment: ${{ steps.parse-json.outputs.environment }}"
-        echo "Version: ${{ steps.parse-json.outputs.version }}"
-        echo "Features: ${{ steps.parse-json.outputs.features }}"
-        echo "Trigger Type: ${{ github.event_name }}"
-        
-        # Example conditional logic based on parameters
-        if [ "${{ steps.parse-json.outputs.dry_run }}" == "true" ]; then
-          echo "🔍 DRY RUN MODE - No actual changes will be made"
-        else
-          echo "🚀 LIVE MODE - Changes will be applied"
-        fi
-        
-        # Trigger-specific logic
-        case "${{ github.event_name }}" in
-          "workflow_dispatch")
-            echo "🖱️  Manual trigger - Using provided parameters"
-            ;;
-          "pull_request")
-            echo "🔄 Pull Request trigger - Running validation checks"
-            echo "PR Number: ${{ github.event.pull_request.number }}"
-            echo "Changed files will be analyzed..."
-            ;;
-          "schedule")
-            echo "⏰ Scheduled trigger - Running daily maintenance"
-            echo "Performing health checks and cleanup..."
-            ;;
-        esac
-        
-        # Example environment-specific logic
-        case "${{ steps.parse-json.outputs.environment }}" in
-          "production")
-            echo "📦 Production deployment logic would go here"
-            if [ "${{ github.event_name }}" == "pull_request" ]; then
-              echo "⚠️  Warning: PR detected but targeting production environment"
-            fi
-            ;;
-          "staging")
-            echo "🧪 Staging deployment logic would go here"
-            ;;
-          "development")
-            echo "🔧 Development deployment logic would go here"
-            ;;
-          *)
-            echo "🤷 Unknown environment: ${{ steps.parse-json.outputs.environment }}"
-            ;;
-        esac
-        
-        # Example feature flag logic
-        IFS=',' read -ra FEATURE_ARRAY <<< "${{ steps.parse-json.outputs.features }}"
-        for feature in "${FEATURE_ARRAY[@]}"; do
-          if [ -n "$feature" ]; then
-            echo "✅ Processing feature: $feature"
-          fi
-        done
-        
+       
     - name: Summary
       run: |
         echo "=== Workflow Summary ==="
