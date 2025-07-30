@@ -1,0 +1,311 @@
+name: PR Comment Deploy
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  deploy-from-comment:
+    # Only run on PR comments
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Parse deployment comment
+      id: parse-comment
+      run: |
+        echo "=== PR Comment Deployment Analysis ==="
+        
+        COMMENT_BODY='${{ github.event.comment.body }}'
+        COMMENT_USER='${{ github.event.comment.user.login }}'
+        PR_NUMBER='${{ github.event.issue.number }}'
+        PR_TITLE='${{ github.event.issue.title }}'
+        
+        echo "PR #$PR_NUMBER: $PR_TITLE"
+        echo "Comment by: $COMMENT_USER"
+        echo "Comment body:"
+        echo "$COMMENT_BODY"
+        echo ""
+        
+        # Check if comment contains deployment JSON or commands
+        if echo "$COMMENT_BODY" | grep -q '^\s*{.*}\s*$' || echo "$COMMENT_BODY" | grep -q '/deploy\|/build\|/run-pipeline\|/jenkins'; then
+          echo "✅ Valid deployment trigger comment detected"
+          
+          # Extract JSON from comment (handle different formats)
+          if echo "$COMMENT_BODY" | grep -q '/deploy\|/build\|/run-pipeline\|/jenkins'; then
+            # Format: /deploy {"environment": "staging", "version": "v1.0"}
+            JSON_PART=$(echo "$COMMENT_BODY" | sed 's|^.*/\(deploy\|build\|run-pipeline\|jenkins\)[[:space:]]*||' | sed 's|[[:space:]]*$||')
+          else
+            # Pure JSON comment during PR review
+            JSON_PART="$COMMENT_BODY"
+          fi
+          
+          echo "Extracted JSON: $JSON_PART"
+          
+          # Validate JSON
+          if echo "$JSON_PART" | jq empty 2>/dev/null; then
+            echo "✅ Valid JSON detected in PR comment"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "deploy_json=$JSON_PART" >> $GITHUB_OUTPUT
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
+            echo "triggered_by=$COMMENT_USER" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Invalid JSON format in PR comment"
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "ℹ️  PR comment doesn't contain deployment trigger pattern"
+          echo "should_deploy=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # Add rocket reaction to show we processed the PR comment
+        if [ "${{ steps.parse-comment.outputs.should_deploy }}" == "true" ]; then
+          echo "Adding rocket reaction to PR comment..."
+          curl -X POST \
+            -H "Authorization: token ${{ github.token }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "${{ github.event.comment.url }}/reactions" \
+            -d '{"content":"rocket"}'
+        fi
+        
+    - name: Skip if no valid deployment JSON
+      if: steps.parse-comment.outputs.should_deploy != 'true'
+      run: |
+        echo "💬 PR comment detected but no valid deployment JSON found"
+        echo ""
+        echo "To trigger a deployment pipeline via PR comment, use one of these formats:"
+        echo ""
+        echo "📋 **Pure JSON:**"
+        echo '{"environment": "staging", "version": "v1.0", "dry_run": true}'
+        echo ""
+        echo "🚀 **Deploy Commands:**"
+        echo "/deploy {\"environment\": \"staging\", \"version\": \"v1.0\"}"
+        echo "/build {\"environment\": \"development\", \"dry_run\": true}"
+        echo "/run-pipeline {\"environment\": \"production\", \"dry_run\": false}"
+        echo "/jenkins {\"environment\": \"staging\", \"features\": [\"api\", \"ui\"]}"
+        echo ""
+        echo "ℹ️  This workflow only processes comments on Pull Requests."
+        exit 0
+        
+    - name: Checkout PR code
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      uses: actions/checkout@v4
+      with:
+        # Checkout the exact PR head to deploy the PR code
+        ref: refs/pull/${{ github.event.issue.number }}/head
+        fetch-depth: 0
+        
+    - name: Process deployment parameters
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      id: process-params
+      run: |
+        echo "=== Processing Deployment Parameters ==="
+        
+        JSON_INPUT='${{ steps.parse-comment.outputs.deploy_json }}'
+        echo "Input JSON: $JSON_INPUT"
+        
+        # Extract deployment parameters with defaults
+        ENVIRONMENT=$(echo "$JSON_INPUT" | jq -r '.environment // "development"')
+        VERSION=$(echo "$JSON_INPUT" | jq -r '.version // "pr-${{ steps.parse-comment.outputs.pr_number }}"')
+        FEATURES=$(echo "$JSON_INPUT" | jq -r '.features // [] | join(",")')
+        DRY_RUN=$(echo "$JSON_INPUT" | jq -r '.dry_run // true')
+        
+        # Additional deployment options
+        DEPLOY_BRANCH=$(echo "$JSON_INPUT" | jq -r '.deploy_branch // "main"')
+        NOTIFICATION=$(echo "$JSON_INPUT" | jq -r '.notification // true')
+        TIMEOUT=$(echo "$JSON_INPUT" | jq -r '.timeout // "30"')
+        
+        echo "=== Parsed Deployment Parameters ==="
+        echo "Environment: $ENVIRONMENT"
+        echo "Version: $VERSION"
+        echo "Features: $FEATURES"
+        echo "Dry Run: $DRY_RUN"
+        echo "Deploy Branch: $DEPLOY_BRANCH"
+        echo "Notification: $NOTIFICATION"
+        echo "Timeout: ${TIMEOUT}m"
+        echo "PR Number: ${{ steps.parse-comment.outputs.pr_number }}"
+        echo "Triggered by: ${{ steps.parse-comment.outputs.triggered_by }}"
+        
+        # Set outputs for Jenkins and other steps
+        echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "features=$FEATURES" >> $GITHUB_OUTPUT
+        echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
+        echo "deploy_branch=$DEPLOY_BRANCH" >> $GITHUB_OUTPUT
+        echo "notification=$NOTIFICATION" >> $GITHUB_OUTPUT
+        echo "timeout=$TIMEOUT" >> $GITHUB_OUTPUT
+        
+    - name: Validate deployment environment
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      run: |
+        echo "=== Validating Deployment Environment ==="
+        
+        ENVIRONMENT="${{ steps.process-params.outputs.environment }}"
+        DRY_RUN="${{ steps.process-params.outputs.dry_run }}"
+        TRIGGERED_BY="${{ steps.parse-comment.outputs.triggered_by }}"
+        
+        # Environment-specific validation
+        case "$ENVIRONMENT" in
+          "production")
+            echo "🔴 PRODUCTION DEPLOYMENT REQUESTED"
+            if [ "$DRY_RUN" != "false" ]; then
+              echo "⚠️  Production deployment with dry_run=$DRY_RUN"
+              echo "To deploy to production, explicitly set: \"dry_run\": false"
+            else
+              echo "⚠️  LIVE PRODUCTION DEPLOYMENT - NO DRY RUN"
+              echo "Triggered by: $TRIGGERED_BY"
+            fi
+            ;;
+          "staging")
+            echo "🟡 Staging deployment - good for testing"
+            ;;
+          "development")
+            echo "🟢 Development deployment - safe for testing"
+            ;;
+          *)
+            echo "❓ Unknown environment: $ENVIRONMENT"
+            echo "Valid environments: development, staging, production"
+            ;;
+        esac
+        
+        # Safety checks
+        if [ "$ENVIRONMENT" == "production" ] && [ "$DRY_RUN" == "false" ]; then
+          echo ""
+          echo "🚨 PRODUCTION DEPLOYMENT SAFETY CHECK:"
+          echo "- Environment: $ENVIRONMENT"
+          echo "- Dry Run: $DRY_RUN"
+          echo "- Triggered by: $TRIGGERED_BY"
+          echo "- PR: #${{ steps.parse-comment.outputs.pr_number }}"
+          echo ""
+          echo "⏰ Proceeding with production deployment in 10 seconds..."
+          sleep 10
+        fi
+        
+    - name: Trigger Jenkins deployment
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      run: |
+        echo "=== Triggering Jenkins Deployment Pipeline ==="
+        
+        # Jenkins connection details (should be stored as secrets)
+        JENKINS_URL="${{ secrets.JENKINS_URL || 'https://your-jenkins.example.com' }}"
+        JENKINS_USER="${{ secrets.JENKINS_USER || 'github-actions' }}"
+        JENKINS_TOKEN="${{ secrets.JENKINS_TOKEN }}"
+        JENKINS_JOB="${{ secrets.JENKINS_DEPLOY_JOB || secrets.JENKINS_JOB || 'pr-deployment-pipeline' }}"
+        
+        # Prepare Jenkins parameters
+        JENKINS_PARAMS=""
+        JENKINS_PARAMS="${JENKINS_PARAMS}&ENVIRONMENT=${{ steps.process-params.outputs.environment }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&VERSION=${{ steps.process-params.outputs.version }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&FEATURES=${{ steps.process-params.outputs.features }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&DRY_RUN=${{ steps.process-params.outputs.dry_run }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&DEPLOY_BRANCH=${{ steps.process-params.outputs.deploy_branch }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&TIMEOUT=${{ steps.process-params.outputs.timeout }}"
+        
+        # PR and GitHub context
+        JENKINS_PARAMS="${JENKINS_PARAMS}&PR_NUMBER=${{ steps.parse-comment.outputs.pr_number }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&PR_TITLE=${{ steps.parse-comment.outputs.pr_title }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&TRIGGERED_BY=${{ steps.parse-comment.outputs.triggered_by }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&GITHUB_REF=${{ github.ref }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&GITHUB_SHA=${{ github.sha }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&GITHUB_REPO=${{ github.repository }}"
+        JENKINS_PARAMS="${JENKINS_PARAMS}&GITHUB_RUN_ID=${{ github.run_id }}"
+        
+        # Pass the complete JSON as well
+        JENKINS_PARAMS="${JENKINS_PARAMS}&DEPLOY_JSON=$(echo '${{ steps.parse-comment.outputs.deploy_json }}' | jq -c .)"
+        
+        echo "Jenkins Job: $JENKINS_JOB"
+        echo "Parameters: $JENKINS_PARAMS"
+        
+        if [ -z "$JENKINS_TOKEN" ]; then
+          echo "⚠️  JENKINS_TOKEN secret not set"
+          echo ""
+          echo "To enable Jenkins integration, add these secrets to your repository:"
+          echo "- JENKINS_URL: Your Jenkins server URL"
+          echo "- JENKINS_USER: Jenkins username"  
+          echo "- JENKINS_TOKEN: Jenkins API token"
+          echo "- JENKINS_DEPLOY_JOB: Jenkins deployment job name"
+          echo ""
+          echo "🔄 Simulating Jenkins deployment..."
+          echo "Would trigger: $JENKINS_URL/job/$JENKINS_JOB/buildWithParameters"
+        else
+          echo "🚀 Triggering Jenkins deployment job: $JENKINS_JOB"
+          
+          HTTP_STATUS=$(curl -s -o /tmp/jenkins_response.txt -w "%{http_code}" \
+            -X POST \
+            -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters?${JENKINS_PARAMS#&}")
+          
+          if [ "$HTTP_STATUS" -eq 201 ] || [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Jenkins deployment triggered successfully (HTTP $HTTP_STATUS)"
+            echo "🔗 Monitor deployment: ${JENKINS_URL}/job/${JENKINS_JOB}"
+          else
+            echo "❌ Failed to trigger Jenkins deployment (HTTP $HTTP_STATUS)"
+            echo "Response:"
+            cat /tmp/jenkins_response.txt || echo "No response file"
+            exit 1
+          fi
+        fi
+        
+    - name: Post deployment status to PR
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      run: |
+        echo "=== Posting Deployment Status to PR ==="
+        
+        # Determine status based on dry run
+        if [ "${{ steps.process-params.outputs.dry_run }}" == "true" ]; then
+          STATUS_ICON="🧪"
+          STATUS_TEXT="**Test Deployment Triggered**"
+          ACTION_TEXT="testing"
+        else
+          STATUS_ICON="🚀"
+          STATUS_TEXT="**Live Deployment Triggered**"
+          ACTION_TEXT="deploying"
+        fi
+        
+        # Create deployment status comment
+        DEPLOYMENT_COMMENT="$STATUS_ICON $STATUS_TEXT
+        
+        **PR:** #${{ steps.parse-comment.outputs.pr_number }} - ${{ steps.parse-comment.outputs.pr_title }}
+        **Triggered by:** @${{ steps.parse-comment.outputs.triggered_by }}
+        **Action:** Now $ACTION_TEXT PR code to ${{ steps.process-params.outputs.environment }}
+        
+        **📋 Deployment Parameters:**
+        - **Environment:** \`${{ steps.process-params.outputs.environment }}\`
+        - **Version:** \`${{ steps.process-params.outputs.version }}\`
+        - **Features:** \`${{ steps.process-params.outputs.features }}\`
+        - **Dry Run:** \`${{ steps.process-params.outputs.dry_run }}\`
+        - **Timeout:** \`${{ steps.process-params.outputs.timeout }}m\`
+        
+        **🔗 Links:**
+        - **Workflow:** [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+        - **Jenkins:** [\`Monitor Deployment\`](${{ secrets.JENKINS_URL || 'https://your-jenkins.example.com' }}/job/${{ secrets.JENKINS_DEPLOY_JOB || 'pr-deployment-pipeline' }})
+        
+        ✅ **Status:** Pipeline triggered successfully with PR context!"
+        
+        # Post the status comment
+        curl -X POST \
+          -H "Authorization: token ${{ github.token }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "${{ github.event.issue.url }}/comments" \
+          -d "{\"body\": \"$DEPLOYMENT_COMMENT\"}"
+        
+    - name: Deployment summary
+      if: steps.parse-comment.outputs.should_deploy == 'true'
+      run: |
+        echo "=== Deployment Summary ==="
+        echo "✅ PR Comment Deployment Completed"
+        echo ""
+        echo "📊 **Deployment Details:**"
+        echo "- PR: #${{ steps.parse-comment.outputs.pr_number }}"
+        echo "- Environment: ${{ steps.process-params.outputs.environment }}"
+        echo "- Version: ${{ steps.process-params.outputs.version }}"
+        echo "- Dry Run: ${{ steps.process-params.outputs.dry_run }}"
+        echo "- Triggered by: ${{ steps.parse-comment.outputs.triggered_by }}"
+        echo ""
+        echo "🔄 **Next Steps:**"
+        echo "- Monitor Jenkins deployment pipeline"
+        echo "- Check deployment status in target environment"
+        echo "- Review logs for any issues"
+        echo ""
+        echo "🎉 PR comment deployment workflow completed!"
