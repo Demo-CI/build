@@ -183,34 +183,42 @@ jobs:
         STATUS_TEXT="Deployment Triggered"
         ACTION_TEXT="deploying"
         
-        # Create deployment status comment
-        DEPLOYMENT_COMMENT="$STATUS_TEXT
+        # Create and post deployment status comment
+        echo "Creating deployment status comment..."
         
-        PR: #${{ steps.parse-comment.outputs.pr_number }} - ${{ steps.parse-comment.outputs.pr_title }}
-        Triggered by: @${{ steps.parse-comment.outputs.triggered_by }}
-        Action: Now $ACTION_TEXT PR code to ${{ steps.process-params.outputs.environment }}
+        # Build comment content line by line to avoid YAML issues
+        echo "**$STATUS_TEXT**" > /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "**PR:** #${{ steps.parse-comment.outputs.pr_number }} - ${{ steps.parse-comment.outputs.pr_title }}" >> /tmp/comment.md
+        echo "**Triggered by:** ${{ steps.parse-comment.outputs.triggered_by }}" >> /tmp/comment.md
+        echo "**Action:** Now $ACTION_TEXT PR code to ${{ steps.process-params.outputs.environment }}" >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "**Deployment Parameters:**" >> /tmp/comment.md
+        echo "- Environment: ${{ steps.process-params.outputs.environment }}" >> /tmp/comment.md
+        echo "- Version: ${{ steps.process-params.outputs.version }}" >> /tmp/comment.md
+        echo "- Features: ${{ steps.process-params.outputs.features }}" >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "**Links:**" >> /tmp/comment.md
+        echo "- [Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> /tmp/comment.md
+        echo "- [Mock Jenkins](https://jenkins.example.com/job/pr-deployment/123)" >> /tmp/comment.md
+        echo "- [Triggering Comment](${{ github.event.comment.html_url }})" >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "**Status:** Pipeline triggered successfully with PR context!" >> /tmp/comment.md
         
-        Deployment Parameters:
-        - Environment: ${{ steps.process-params.outputs.environment }}
-        - Version: ${{ steps.process-params.outputs.version }}
-        - Features: ${{ steps.process-params.outputs.features }}
-        
-        Links:
-        - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        - Mock Jenkins: https://jenkins.example.com/job/pr-deployment/123
-        - Triggering Comment: ${{ github.event.comment.html_url }}
-        
-        Status: Pipeline triggered successfully with PR context!"
-        
-        # Post the status comment
+        # Post the status comment using proper JSON escaping
         echo "Attempting to post deployment status comment..."
+        
+        # Read the comment content and use jq to properly escape for JSON
+        COMMENT_BODY=$(cat /tmp/comment.md)
+        JSON_PAYLOAD=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
         
         HTTP_STATUS=$(curl -s -o /tmp/comment_response.txt -w "%{http_code}" \
           -X POST \
           -H "Authorization: token ${{ github.token }}" \
           -H "Accept: application/vnd.github.v3+json" \
+          -H "Content-Type: application/json" \
           "${{ github.event.issue.url }}/comments" \
-          -d "{\"body\": \"$DEPLOYMENT_COMMENT\"}")
+          -d "$JSON_PAYLOAD")
         
         if [ "$HTTP_STATUS" -eq 201 ]; then
           echo "✅ Deployment status comment posted successfully!"
@@ -219,12 +227,9 @@ jobs:
           echo "Response:"
           cat /tmp/comment_response.txt || echo "No response file"
           echo ""
-          echo "This might be due to insufficient token permissions."
-          echo "The deployment will continue, but the status comment couldn't be posted."
-          echo ""
-          echo "Deployment status that would have been posted:"
+          echo "Comment content that failed to post:"
           echo "----------------------------------------"
-          echo "$DEPLOYMENT_COMMENT"
+          cat /tmp/comment.md
           echo "----------------------------------------"
         fi
         
