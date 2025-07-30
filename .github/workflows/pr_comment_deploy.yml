@@ -37,7 +37,9 @@ jobs:
           if [ -n "$ENVIRONMENT" ] && [ -n "$VERSION" ] && [ "$FEATURES" != "null" ] && [ "$FEATURES" != "empty" ]; then
             echo "Valid deployment JSON detected with required fields"
             echo "should_deploy=true" >> $GITHUB_OUTPUT
-            echo "deploy_json=$COMMENT_BODY" >> $GITHUB_OUTPUT
+            # Compact the JSON to remove formatting issues
+            COMPACT_JSON=$(echo "$COMMENT_BODY" | jq -c .)
+            echo "deploy_json=$COMPACT_JSON" >> $GITHUB_OUTPUT
             echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
             echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
             echo "triggered_by=$COMMENT_USER" >> $GITHUB_OUTPUT
