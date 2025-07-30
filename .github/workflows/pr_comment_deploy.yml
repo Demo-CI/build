@@ -4,6 +4,11 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
 jobs:
   deploy-from-comment:
     # Only run on PR comments
@@ -198,11 +203,30 @@ jobs:
         Status: Pipeline triggered successfully with PR context!"
         
         # Post the status comment
-        curl -X POST \
+        echo "Attempting to post deployment status comment..."
+        
+        HTTP_STATUS=$(curl -s -o /tmp/comment_response.txt -w "%{http_code}" \
+          -X POST \
           -H "Authorization: token ${{ github.token }}" \
           -H "Accept: application/vnd.github.v3+json" \
           "${{ github.event.issue.url }}/comments" \
-          -d "{\"body\": \"$DEPLOYMENT_COMMENT\"}"
+          -d "{\"body\": \"$DEPLOYMENT_COMMENT\"}")
+        
+        if [ "$HTTP_STATUS" -eq 201 ]; then
+          echo "✅ Deployment status comment posted successfully!"
+        else
+          echo "❌ Failed to post comment (HTTP $HTTP_STATUS)"
+          echo "Response:"
+          cat /tmp/comment_response.txt || echo "No response file"
+          echo ""
+          echo "This might be due to insufficient token permissions."
+          echo "The deployment will continue, but the status comment couldn't be posted."
+          echo ""
+          echo "Deployment status that would have been posted:"
+          echo "----------------------------------------"
+          echo "$DEPLOYMENT_COMMENT"
+          echo "----------------------------------------"
+        fi
         
     - name: Deployment summary
       if: steps.parse-comment.outputs.should_deploy == 'true'
