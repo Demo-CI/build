@@ -80,7 +80,7 @@ runs:
             
             // Extract configuration
             const buildType = buildConfig.build_type || 'release';
-            const saveLogs = buildConfig.save_logs || false;
+            const saveLogs = buildConfig.save_logs === true || buildConfig.save_logs === 'true';
             const reason = buildConfig.reason || 'JSON comment trigger';
             
             console.log('📋 Parsed configuration:');
@@ -222,19 +222,15 @@ runs:
             
             // Post confirmation comment for JSON triggers
             if (context.eventName === 'issue_comment' && context.issue?.number) {
-              const confirmComment = `
-              ✅ **Build Triggered Successfully**
-              
-              **Configuration:**
-              - **Type:** \`${{ steps.determine.outputs.build_type }}\`
-              - **Save Logs:** \`${{ steps.determine.outputs.save_logs }}\`
-              - **Reason:** ${{ steps.determine.outputs.reason }}
-              
-              🔗 **Monitor Progress:** [Centralized Build Workflows](https://github.com/Demo-CI/build/actions)
-              
-              ---
-              *Build results will be posted here automatically when complete.*
-              `;
+              const confirmComment = 
+              "✅ **Build Triggered Successfully**\n\n" +
+              "**Configuration:**\n" +
+              "- **Type:** `" + buildType + "`\n" +
+              "- **Save Logs:** `" + saveLogs + "`\n" +
+              "- **Reason:** " + reason + "\n\n" +
+              "🔗 **Monitor Progress:** [Centralized Build Workflows](https://github.com/Demo-CI/build/actions)\n\n" +
+              "---\n" +
+              "*Build results will be posted here automatically when complete.*";
               
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
