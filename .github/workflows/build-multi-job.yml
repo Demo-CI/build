@@ -1,0 +1,602 @@
+name: Multi-Repository Build (Multi-Job)
+
+on:
+  # Repository dispatch from source repositories
+  repository_dispatch:
+    types: [application-updated, static-library-updated]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'What to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - library
+        - application
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+      artifacts_retention:
+        description: 'Artifacts retention (days)'
+        required: false
+        default: '30'
+        type: string
+
+jobs:
+  # Job 1: Configuration and Setup
+  config:
+    name: 🔧 Extract Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      build_type: ${{ steps.config.outputs.build_type }}
+      save_logs: ${{ steps.config.outputs.save_logs }}
+      trigger_reason: ${{ steps.config.outputs.trigger_reason }}
+      source_repo: ${{ steps.config.outputs.source_repo }}
+      source_sha: ${{ steps.config.outputs.source_sha }}
+      source_ref: ${{ steps.config.outputs.source_ref }}
+      pr_number: ${{ steps.config.outputs.pr_number }}
+      build_library: ${{ steps.strategy.outputs.build_library }}
+      build_application: ${{ steps.strategy.outputs.build_application }}
+      artifacts_retention: ${{ steps.config.outputs.artifacts_retention }}
+    
+    steps:
+    - name: Extract build configuration
+      id: config
+      run: |
+        echo "=== Extracting Build Configuration ==="
+        
+        # Default values
+        BUILD_TYPE="release"
+        SAVE_LOGS="false"
+        TRIGGER_REASON="Manual build"
+        SOURCE_REPO="unknown"
+        SOURCE_SHA="unknown"
+        SOURCE_REF="unknown"
+        PR_NUMBER=""
+        ARTIFACTS_RETENTION="${{ inputs.artifacts_retention || '30' }}"
+        
+        # Extract from repository dispatch payload
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          BUILD_TYPE="${{ github.event.client_payload.build_type || 'release' }}"
+          SAVE_LOGS="${{ github.event.client_payload.save_logs || 'false' }}"
+          TRIGGER_REASON="${{ github.event.client_payload.commit_message || 'Repository dispatch trigger' }}"
+          SOURCE_REPO="${{ github.event.client_payload.repository || 'unknown' }}"
+          SOURCE_SHA="${{ github.event.client_payload.sha || 'unknown' }}"
+          SOURCE_REF="${{ github.event.client_payload.ref_name || 'unknown' }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number || '' }}"
+          
+          echo "📡 Repository Dispatch Event: ${{ github.event.action }}"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "📝 Save Logs: $SAVE_LOGS"
+          echo "📁 Source Repo: $SOURCE_REPO"
+          echo "🔗 Source SHA: $SOURCE_SHA"
+          echo "🌿 Source Branch: $SOURCE_REF"
+          echo "💬 Reason: $TRIGGER_REASON"
+        fi
+        
+        # Extract from manual workflow dispatch
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          SAVE_LOGS="false"  # Manual triggers don't have save_logs input yet
+          TRIGGER_REASON="Manual workflow dispatch"
+          
+          echo "🎮 Manual Workflow Dispatch"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "🎯 Target: ${{ inputs.build_target || 'all' }}"
+        fi
+        
+        # Set outputs for use in subsequent jobs
+        echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+        echo "save_logs=$SAVE_LOGS" >> $GITHUB_OUTPUT
+        echo "trigger_reason=$TRIGGER_REASON" >> $GITHUB_OUTPUT
+        echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+        echo "source_sha=$SOURCE_SHA" >> $GITHUB_OUTPUT
+        echo "source_ref=$SOURCE_REF" >> $GITHUB_OUTPUT
+        echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+        echo "artifacts_retention=$ARTIFACTS_RETENTION" >> $GITHUB_OUTPUT
+        
+        echo "" 
+        echo "=== Configuration Summary ==="
+        echo "Build Type: $BUILD_TYPE"
+        echo "Save Logs: $SAVE_LOGS"
+        echo "Trigger: $TRIGGER_REASON"
+        echo "📦 Artifacts Retention: $ARTIFACTS_RETENTION days"
+    
+    - name: Determine build strategy
+      id: strategy
+      run: |
+        echo "=== Determining build strategy ==="
+        
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          trigger_type="${{ github.event.action }}"
+          echo "Repository dispatch trigger: $trigger_type"
+          
+          case "$trigger_type" in
+            "application-updated")
+              echo "Building library + application (application updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "static-library-updated")
+              echo "Building library + application (library updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unknown trigger, building all"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        else
+          # Manual trigger
+          build_target="${{ github.event.inputs.build_target || 'all' }}"
+          echo "Manual trigger: $build_target"
+          
+          case "$build_target" in
+            "library")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=false" >> $GITHUB_OUTPUT
+              ;;
+            "application")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "all"|*)
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        fi
+        
+        echo "Build strategy determined:"
+        echo "- Build library: $(grep 'build_library=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        echo "- Build application: $(grep 'build_application=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+
+  # Job 2: Workspace Setup (shared by all build jobs)
+  setup:
+    name: 🏗️ Setup Workspace
+    runs-on: ubuntu-latest
+    needs: config
+    
+    steps:
+    - name: Checkout build repository
+      uses: actions/checkout@v4
+    
+    - name: Setup workspace with manifest
+      run: |
+        echo "=== Setting up workspace using manifest ==="
+        
+        # Install Google Repo tool
+        mkdir -p ~/.local/bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+        chmod +x ~/.local/bin/repo
+        export PATH="$HOME/.local/bin:$PATH"
+        
+        # Verify repo tool installation
+        repo --version
+        
+        # Configure git (required by repo)
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Create workspace using manifest
+        mkdir workspace
+        cd workspace
+        
+        # Initialize repo workspace with manifest
+        repo init -u https://github.com/Demo-CI/manifest.git -m default.xml
+        
+        # Sync all repositories
+        repo sync -j4
+        
+        # Verify workspace structure
+        echo "=== Workspace structure ==="
+        ls -la
+        echo "=== Repository list ==="
+        repo list
+        echo "=== Repository status ==="
+        repo status
+        
+        echo "Workspace setup complete using manifest"
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cppcheck \
+          clang-format \
+          valgrind \
+          doxygen \
+          graphviz
+    
+    - name: Cache workspace
+      uses: actions/cache@v4
+      with:
+        path: workspace/
+        key: workspace-${{ github.run_id }}
+        enableCrossOsArchive: true
+
+  # Job 3: Build Static Library (independent - builds ONLY the library)
+  build-library:
+    name: 📚 Build Static Library
+    runs-on: ubuntu-latest
+    needs: [config, setup]
+    if: needs.config.outputs.build_library == 'true'
+    outputs:
+      status: ${{ steps.build.outcome }}
+    
+    steps:
+    - name: Restore workspace
+      uses: actions/cache@v4
+      with:
+        path: workspace/
+        key: workspace-${{ github.run_id }}
+        enableCrossOsArchive: true
+        fail-on-cache-miss: true
+    
+    - name: Build static library
+      id: build
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        cd workspace/build
+        echo "=== Building Static Library ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # Use the build script to build (includes library)
+        ./scripts/build.sh build
+        
+        # Verify library was created in the expected location
+        if [ -f "../libs/calculator/lib/libcalculator.a" ]; then
+          echo "✅ Static library built successfully"
+          ls -lh ../libs/calculator/lib/libcalculator.a
+        else
+          echo "❌ Static library build failed - libcalculator.a not found"
+          exit 1
+        fi
+    
+    - name: Upload library artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: library-artifacts-${{ github.run_number }}
+        path: |
+          workspace/build/artifacts/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+        if-no-files-found: warn
+
+  # Job 4: Build Application (MUST wait for library to complete)
+  build-application:
+    name: 🎯 Build Application
+    runs-on: ubuntu-latest
+    needs: [config, setup, build-library]
+    # Application can only build if library was built successfully
+    if: needs.config.outputs.build_application == 'true' && needs.build-library.result == 'success'
+    outputs:
+      status: ${{ steps.build.outcome }}
+    
+    steps:
+    - name: Restore workspace
+      uses: actions/cache@v4
+      with:
+        path: workspace/
+        key: workspace-${{ github.run_id }}
+        enableCrossOsArchive: true
+        fail-on-cache-miss: true
+    
+    - name: Download library artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: library-artifacts-${{ github.run_number }}
+        path: workspace/libs/calculator/
+    
+    - name: Build application
+      id: build
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        cd workspace/build
+        echo "=== Building Application ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # Verify static library exists (already built by build-library job)
+        if [ ! -f "../libs/calculator/lib/libcalculator.a" ]; then
+          echo "❌ Static library not found - build-library job may have failed"
+          exit 1
+        fi
+        
+        # Build everything using build script (skips library since already built)
+        ./scripts/build.sh build
+        
+        # Verify application was created
+        if [ -f "../application/calculator" ]; then
+          echo "✅ Application built successfully"
+          ls -lh ../application/calculator
+        else
+          echo "❌ Application build failed - calculator executable not found"
+          exit 1
+        fi
+    
+    - name: Upload application artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: application-artifacts-${{ github.run_number }}
+        path: |
+          workspace/build/artifacts/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+        if-no-files-found: warn
+
+  # Job 5: Run Tests (depends on SUCCESSFUL builds)
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    needs: [config, setup, build-library, build-application]
+    # Tests can only run if all required builds succeeded
+    if: always() && needs.build-library.result == 'success' && (needs.config.outputs.build_application == 'false' || needs.build-application.result == 'success')
+    outputs:
+      status: ${{ steps.test.outcome }}
+    
+    steps:
+    - name: Restore workspace
+      uses: actions/cache@v4
+      with:
+        path: workspace/
+        key: workspace-${{ github.run_id }}
+        enableCrossOsArchive: true
+        fail-on-cache-miss: true
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*-artifacts-${{ github.run_number }}"
+        path: workspace/
+        merge-multiple: true
+    
+    - name: Run tests
+      id: test
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        cd workspace/build
+        echo "=== Running Tests ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # Verify application and test runner exist
+        if [ ! -f "../application/calculator" ]; then
+          echo "❌ Application not found - build-application job may have failed"
+          exit 1
+        fi
+        
+        if [ ! -f "../application/test_runner" ]; then
+          echo "❌ Test runner not found"
+          exit 1
+        fi
+        
+        # Run tests using build script
+        ./scripts/build.sh test
+        
+        echo "✅ Tests completed"
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ github.run_number }}
+        path: |
+          workspace/build/test-results/
+          workspace/*/test-results/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+        if-no-files-found: warn
+
+  # Job 6: Collect Final Results and Report
+  results:
+    name: 📊 Build Results
+    runs-on: ubuntu-latest
+    needs: [config, build-library, build-application, test]
+    if: always()
+    
+    steps:
+    - name: Collect all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*-${{ github.run_number }}"
+        path: final-artifacts/
+        merge-multiple: true
+    
+    - name: Upload final build package
+      uses: actions/upload-artifact@v4
+      with:
+        name: complete-build-${{ github.run_number }}
+        path: final-artifacts/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+    
+    - name: Upload build logs
+      if: needs.config.outputs.save_logs == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.run_number }}
+        path: |
+          workspace/build/logs/
+          workspace/build/build.log
+          workspace/*/build/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+        if-no-files-found: warn
+    
+    - name: Build summary
+      run: |
+        echo "## 🚀 Multi-Job Build Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "> **Dependency Chain:** Config → Setup → Library → Application → Tests → Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Configuration Table
+        echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Type | \`${{ needs.config.outputs.build_type }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Verbose Logs | \`${{ needs.config.outputs.save_logs }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Artifacts Retention | \`${{ needs.config.outputs.artifacts_retention }} days\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Trigger Reason | ${{ needs.config.outputs.trigger_reason }} |" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.config.outputs.source_repo }}" != "unknown" ]]; then
+          echo "| Source Repository | \`${{ needs.config.outputs.source_repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Branch | \`${{ needs.config.outputs.source_ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source SHA | \`${{ needs.config.outputs.source_sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Results Table
+        echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status | Job |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|-----|" >> $GITHUB_STEP_SUMMARY
+        
+        # Dynamic status based on job results
+        library_status="${{ needs.build-library.result }}"
+        app_status="${{ needs.build-application.result }}"
+        test_status="${{ needs.test.result }}"
+        
+        case "$library_status" in
+          "success") echo "| Static Library | ✅ Built | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "failure") echo "| Static Library | ❌ Failed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "skipped") echo "| Static Library | ⏭️ Skipped | - |" >> $GITHUB_STEP_SUMMARY ;;
+          *) echo "| Static Library | ❓ Unknown | - |" >> $GITHUB_STEP_SUMMARY ;;
+        esac
+        
+        case "$app_status" in
+          "success") echo "| Application | ✅ Built | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "failure") echo "| Application | ❌ Failed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "skipped") echo "| Application | ⏭️ Skipped | - |" >> $GITHUB_STEP_SUMMARY ;;
+          *) echo "| Application | ❓ Unknown | - |" >> $GITHUB_STEP_SUMMARY ;;
+        esac
+        
+        case "$test_status" in
+          "success") echo "| Tests | ✅ Passed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "failure") echo "| Tests | ❌ Failed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "skipped") echo "| Tests | ⏭️ Skipped | - |" >> $GITHUB_STEP_SUMMARY ;;
+          *) echo "| Tests | ❓ Unknown | - |" >> $GITHUB_STEP_SUMMARY ;;
+        esac
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Artifacts Information
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Complete Build Package:** All artifacts combined" >> $GITHUB_STEP_SUMMARY
+        echo "- **Component Artifacts:** Individual library, application, and test artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Retention:** ${{ needs.config.outputs.artifacts_retention }} days" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.config.outputs.save_logs }}" == "true" ]]; then
+          echo "- **Build Logs:** Detailed logs saved" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Build Logs:** Standard logging only" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Post build results to source PR
+      if: always() && needs.config.outputs.pr_number != ''
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.PAT_TOKEN }}
+        script: |
+          const sourceRepo = '${{ needs.config.outputs.source_repo }}';
+          const prNumber = '${{ needs.config.outputs.pr_number }}';
+          const buildType = '${{ needs.config.outputs.build_type }}';
+          const saveLogs = '${{ needs.config.outputs.save_logs }}';
+          const runId = '${{ github.run_id }}';
+          const runNumber = '${{ github.run_number }}';
+          const artifactRetention = '${{ needs.config.outputs.artifacts_retention }}';
+          
+          // Get individual job results
+          const libraryStatus = '${{ needs.build-library.result }}';
+          const applicationStatus = '${{ needs.build-application.result }}';
+          const testsStatus = '${{ needs.test.result }}';
+          
+          // Parse repository owner and name
+          const [owner, repo] = sourceRepo.split('/');
+          
+          // Determine overall status
+          let statusEmoji, statusMessage, buildResult;
+          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
+          
+          if (hasFailures) {
+            statusEmoji = '❌';
+            statusMessage = 'Build failed. Please check the individual job logs for details.';
+            buildResult = 'Failed';
+          } else if ([libraryStatus, applicationStatus, testsStatus].every(s => s === 'success' || s === 'skipped')) {
+            statusEmoji = '✅';
+            statusMessage = 'All builds completed successfully!';
+            buildResult = 'Success';
+          } else {
+            statusEmoji = '⚠️';
+            statusMessage = 'Build completed with warnings.';
+            buildResult = 'Warning';
+          }
+          
+          // Build detailed results
+          const getJobStatus = (status) => {
+            switch(status) {
+              case 'success': return '✅ Success';
+              case 'failure': return '❌ Failed';
+              case 'skipped': return '⏭️ Skipped';
+              default: return '❓ Unknown';
+            }
+          };
+          
+          // Build the comment body (using concatenation to avoid template literal escaping issues)
+          const commentBody = 
+          "## " + statusEmoji + " Centralized Build " + buildResult + " (Multi-Job)\n\n" +
+          "**Build Configuration:**\n" +
+          "- **Type:** `" + buildType + "`\n" +
+          "- **Save Logs:** `" + saveLogs + "`\n" +
+          "- **Run:** [#" + runNumber + "](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n\n" +
+          "**Build Jobs:**\n" +
+          "- **Static Library:** " + getJobStatus(libraryStatus) + "\n" +
+          "- **Application:** " + getJobStatus(applicationStatus) + "\n" +
+          "- **Tests:** " + getJobStatus(testsStatus) + "\n\n" +
+          "**Summary:**\n" +
+          statusMessage + "\n\n" +
+          "**Artifacts:**\n" +
+          "- 📦 Complete build package available for " + artifactRetention + " days\n" +
+          "- 🎯 Individual component artifacts available\n" +
+          (saveLogs === 'true' ? '- 📝 Detailed build logs saved\n' : '- 📝 Standard logging only\n') +
+          "\n" +
+          "**Actions:**\n" +
+          "- [View detailed build logs](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
+          "- [Download complete package](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
+          "- [View individual jobs](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n\n" +
+          "---\n" +
+          "*This comment was automatically generated by the multi-job centralized build system.*";
+          
+          try {
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: parseInt(prNumber),
+              body: commentBody
+            });
+            
+            console.log('Posted build results to PR #' + prNumber + ' in ' + sourceRepo);
+          } catch (error) {
+            console.error('Failed to post comment to source PR:', error.message);
+            // Don't fail the workflow if commenting fails
+          }
