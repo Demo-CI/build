@@ -105,9 +105,9 @@ To enable cross-repository triggering, configure a Personal Access Token:
 
 ### Quick Start
 ```bash
-# Setup workspace (identical to CI)
-repo init -u https://github.com/Demo-CI/manifest.git
-repo sync
+# Setup workspace (using dedicated setup script)
+./scripts/setup-workspace.sh ~/my-workspace
+cd ~/my-workspace
 
 # Build everything
 cd build
@@ -120,7 +120,7 @@ cd build
 ### Local/CI Consistency
 | Aspect | Local | CI |
 |--------|-------|-----|
-| Workspace | `repo sync` | `repo sync` |
+| Workspace | `setup-workspace.sh <dir>` | `setup-workspace.sh workspace` |
 | Build | `./scripts/build.sh` | `./scripts/build.sh` |
 | Tests | `./scripts/build.sh test` | `./scripts/build.sh test` |
 

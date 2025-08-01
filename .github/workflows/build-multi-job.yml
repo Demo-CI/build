@@ -176,9 +176,9 @@ jobs:
       run: |
         echo "=== Setting up workspace using manifest ==="
         
-        # Use the dedicated setup-workspace.sh script
-        cd workspace
-        ../build/scripts/setup-workspace.sh init
+        # Use the dedicated setup-workspace.sh script to setup the workspace
+        # The script will create the workspace directory and initialize it
+        ./scripts/setup-workspace.sh workspace
         
         echo "Workspace setup complete using manifest"
     
