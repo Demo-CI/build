@@ -1,0 +1,199 @@
+name: Multi-Repository Build
+
+on:
+  # Repository dispatch from source repositories
+  repository_dispatch:
+    types: [application-updated, static-library-updated]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'What to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - library
+        - application
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout build repository
+      uses: actions/checkout@v4
+    
+    - name: Checkout source repositories
+      run: |
+        echo "=== Setting up workspace ==="
+        
+        # Create workspace structure
+        mkdir -p workspace
+        cd workspace
+        
+        # Clone application repository
+        echo "Cloning application repository..."
+        git clone https://github.com/Demo-CI/application.git
+        
+        # Clone static library repository
+        echo "Cloning static library repository..."
+        git clone https://github.com/Demo-CI/static_library.git libs/calculator
+        
+        # Copy build scripts to workspace
+        cp -r ../scripts ../run.sh .
+        
+        echo "Workspace setup complete"
+        ls -la
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cppcheck \
+          clang-format \
+          valgrind \
+          doxygen \
+          graphviz
+    
+    - name: Determine build strategy
+      id: strategy
+      run: |
+        echo "=== Determining build strategy ==="
+        
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          trigger_type="${{ github.event.action }}"
+          echo "Repository dispatch trigger: $trigger_type"
+          
+          case "$trigger_type" in
+            "application-updated")
+              echo "Building library + application (application updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "static-library-updated")
+              echo "Building library + application (library updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unknown trigger, building all"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        else
+          # Manual trigger
+          build_target="${{ github.event.inputs.build_target || 'all' }}"
+          echo "Manual trigger: $build_target"
+          
+          case "$build_target" in
+            "library")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=false" >> $GITHUB_OUTPUT
+              ;;
+            "application")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "all"|*)
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        fi
+        
+        echo "Build strategy determined:"
+        echo "- Build library: $(grep 'build_library=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        echo "- Build application: $(grep 'build_application=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+    
+    - name: Build static library
+      if: steps.strategy.outputs.build_library == 'true'
+      run: |
+        cd workspace
+        echo "=== Building Static Library ==="
+        
+        # Use the build script to build the library only
+        ./scripts/build.sh build
+    
+    - name: Build application
+      if: steps.strategy.outputs.build_application == 'true'
+      run: |
+        cd workspace
+        echo "=== Building Application ==="
+        
+        # The build script will build both library and application
+        if [[ "${{ steps.strategy.outputs.build_library }}" != "true" ]]; then
+          # If library wasn't built in previous step, build everything
+          ./scripts/build.sh build
+        fi
+    
+    - name: Run tests
+      run: |
+        cd workspace
+        echo "=== Running Tests ==="
+        
+        # Run tests using the build script
+        ./scripts/build.sh test
+    
+    - name: Collect artifacts
+      run: |
+        cd workspace
+        echo "=== Collecting Build Artifacts ==="
+        
+        # Create artifacts directory
+        mkdir -p ../artifacts
+        
+        # Collect library artifacts
+        if [ -d "libs/calculator/lib" ]; then
+          cp -r libs/calculator/lib ../artifacts/library
+        fi
+        
+        # Collect application artifacts
+        if [ -f "application/calculator" ]; then
+          mkdir -p ../artifacts/application
+          cp application/calculator ../artifacts/application/
+        fi
+        
+        # Show what we collected
+        echo "Artifacts collected:"
+        find ../artifacts -type f 2>/dev/null || echo "No artifacts found"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-${{ github.run_number }}
+        path: artifacts/
+        retention-days: 30
+    
+    - name: Build summary
+      run: |
+        echo "## 🚀 Build Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          echo "**Trigger:** Repository dispatch (${{ github.event.action }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Source:** ${{ github.event.client_payload.repository || 'Unknown' }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "**Trigger:** Manual (${{ github.event.inputs.build_target || 'all' }})" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Artifacts:** Available in the build artifacts for 30 days" >> $GITHUB_STEP_SUMMARY
