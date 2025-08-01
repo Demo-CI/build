@@ -1,14 +1,84 @@
-# Complete Workflow: Manifest → Build → Test
+# Demo-CI Build System
 
-## Step 1: Fetch Project via Manifest
+[![Multi-Repository Build](https://github.com/Demo-CI/build/actions/workflows/build.yml/badge.svg)](https://github.com/Demo-CI/build/actions/workflows/build.yml)
 
+Centralized build system for the Demo-CI multi-repository project.
+
+## Overview
+
+This repository contains the centralized build system that coordinates building and testing across multiple repositories:
+- **application** - Main C++ calculator application
+- **static_library** - Calculator math utilities library
+- **toolchain** - Development tools and utilities
+
+### Key Features
+- ✅ **Automated multi-repository builds** triggered by source repository changes
+- ✅ **Comprehensive build scripts** for local development
+- ✅ **GitHub Actions integration** with repository dispatch
+- ✅ **Cross-repository dependency management**
+- ✅ **Artifact collection and reporting**
+
+### Build Triggers
+- Push to `application` repository → triggers centralized build
+- Push to `static_library` repository → triggers centralized build
+- Manual workflow dispatch for testing and debugging
+
+---
+
+## GitHub Actions Integration
+
+### Centralized Build Workflow
+
+The repository includes a GitHub Actions workflow (`build.yml`) that provides centralized building:
+
+**Workflow Name**: Multi-Repository Build  
+**Triggers**:
+- Repository dispatch from `application` and `static_library` repositories
+- Manual workflow dispatch for testing
+
+**Build Process**:
+1. **Setup Environment** - Configures build tools and dependencies
+2. **Clone Repositories** - Fetches source repositories based on trigger
+3. **Build Static Library** - Compiles the calculator library
+4. **Build Application** - Compiles the main application with library dependency
+5. **Run Tests** - Executes test suites for both library and application
+6. **Collect Artifacts** - Gathers build outputs, logs, and reports
+
+**Artifacts Created**:
+- Application executable (`calculator`)
+- Static library (`libcalculator.a`)
+- Build logs and test reports
+- Coverage and analysis reports
+
+### Monitoring Builds
+
+- **Build Status**: Check the badge above or visit [Actions tab](https://github.com/Demo-CI/build/actions)
+- **Build Logs**: Available in the workflow run details
+- **Artifacts**: Downloadable from completed workflow runs
+
+### Manual Triggering
+
+You can manually trigger builds from the GitHub Actions tab:
+1. Go to [Actions tab](https://github.com/Demo-CI/build/actions)
+2. Select "Multi-Repository Build" workflow
+3. Click "Run workflow"
+4. Choose build options (all/library/application, debug/release)
+
+---
+
+## Complete Workflow: Manifest → Build → Test
+
+### Step 1: Fetch Project via Manifest
+
+#### Prerequisites: Install repo tool
 ```bash
-# Prerequisites: Install repo tool
 curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
 chmod +x ~/.local/bin/repo
 export PATH="$HOME/.local/bin:$PATH"
+```
 
-# Create workspace and fetch all repositories
+#### Create workspace and fetch all repositories
+```bash
 mkdir demo-ci-workspace && cd demo-ci-workspace
 repo init -u https://github.com/Demo-CI/manifest.git
 repo sync
@@ -27,7 +97,7 @@ demo-ci-workspace/
 └── toolchain/             # Development tools
 ```
 
-## Step 2: Build via Provided Scripts
+### Step 2: Build via Provided Scripts
 
 The build repository contains comprehensive build scripts:
 
@@ -49,7 +119,7 @@ cd build
 ./run.sh build status        # Show repository status
 ```
 
-## Step 3: Test via Build Scripts
+### Step 3: Test via Build Scripts
 
 ```bash
 # From build directory, run comprehensive tests
@@ -69,7 +139,7 @@ cd ../application
 echo "5 + 3" | ./calculator  # Test with input
 ```
 
-## Alternative: Using Build Scripts Directly
+### Alternative: Using Build Scripts Directly
 
 ```bash
 # If you want to use build scripts without full manifest setup
@@ -84,7 +154,7 @@ git clone https://github.com/Demo-CI/static_library.git ../libs/calculator
 ./run.sh build all
 ```
 
-## Build Script Options
+### Build Script Options
 
 ```bash
 # Available run.sh commands:
@@ -110,7 +180,7 @@ git clone https://github.com/Demo-CI/static_library.git ../libs/calculator
 ./run.sh build all --ignore-dirty    # Ignore uncommitted changes
 ```
 
-## Expected Build Artifacts
+### Expected Build Artifacts
 
 After successful build via scripts:
 
