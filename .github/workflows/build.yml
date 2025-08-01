@@ -210,8 +210,6 @@ jobs:
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
-        IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Building Static Library ==="
@@ -228,8 +226,6 @@ jobs:
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
-        IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Building Application ==="
@@ -248,8 +244,6 @@ jobs:
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
-        IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Running Tests ==="

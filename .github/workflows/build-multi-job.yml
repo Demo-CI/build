@@ -176,36 +176,9 @@ jobs:
       run: |
         echo "=== Setting up workspace using manifest ==="
         
-        # Install Google Repo tool
-        mkdir -p ~/.local/bin
-        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
-        chmod +x ~/.local/bin/repo
-        export PATH="$HOME/.local/bin:$PATH"
-        
-        # Verify repo tool installation
-        repo --version
-        
-        # Configure git (required by repo)
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        
-        # Create workspace using manifest
-        mkdir workspace
+        # Use the dedicated setup-workspace.sh script
         cd workspace
-        
-        # Initialize repo workspace with manifest
-        repo init -u https://github.com/Demo-CI/manifest.git -m default.xml
-        
-        # Sync all repositories
-        repo sync -j4
-        
-        # Verify workspace structure
-        echo "=== Workspace structure ==="
-        ls -la
-        echo "=== Repository list ==="
-        repo list
-        echo "=== Repository status ==="
-        repo status
+        ../build/scripts/setup-workspace.sh init
         
         echo "Workspace setup complete using manifest"
     
@@ -252,16 +225,14 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
         IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Building Static Library ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
-        echo "🤖 CI Environment: Skipping repo status checks"
+        echo "🤖 CI Environment: No repo status checks needed"
         
         # Use the build script to build (includes library)
-        # In CI, we skip repo status checks since they require repo tool
         ./scripts/build.sh build
         
         # Verify library was created in the expected location
@@ -315,13 +286,12 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
         IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Building Application ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
-        echo "🤖 CI Environment: Skipping repo status checks"
+        echo "🤖 CI Environment: No repo status checks needed"
         
         # Verify static library exists (already built by build-library job)
         if [ ! -f "../libs/calculator/lib/libcalculator.a" ]; then
@@ -384,13 +354,12 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
         IGNORE_DIRTY: "true"
-        CI: "true"
       run: |
         cd workspace/build
         echo "=== Running Tests ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
-        echo "🤖 CI Environment: Skipping repo status checks"
+        echo "🤖 CI Environment: No repo status checks needed"
         
         # Verify application and test runner exist
         if [ ! -f "../application/calculator" ]; then
@@ -419,11 +388,67 @@ jobs:
         retention-days: ${{ needs.config.outputs.artifacts_retention }}
         if-no-files-found: warn
 
-  # Job 6: Collect Final Results and Report
+  # Job 6: Generate Documentation (can run in parallel with tests)
+  docs:
+    name: 📚 Generate Documentation
+    runs-on: ubuntu-latest
+    needs: [config, setup, build-library, build-application]
+    # Docs can run if builds succeeded
+    if: always() && needs.build-library.result == 'success' && (needs.config.outputs.build_application == 'false' || needs.build-application.result == 'success')
+    outputs:
+      status: ${{ steps.docs.outcome }}
+    
+    steps:
+    - name: Restore workspace
+      uses: actions/cache@v4
+      with:
+        path: workspace/
+        key: workspace-${{ github.run_id }}
+        enableCrossOsArchive: true
+        fail-on-cache-miss: true
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*-artifacts-${{ github.run_number }}"
+        path: workspace/
+        merge-multiple: true
+    
+    - name: Generate documentation
+      id: docs
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+        IGNORE_DIRTY: "true"
+      run: |
+        cd workspace/build
+        echo "=== Generating Documentation ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        echo "🤖 CI Environment: No repo status checks needed"
+        
+        # Generate documentation using build script
+        ./scripts/build.sh docs
+        
+        echo "✅ Documentation generation completed"
+    
+    - name: Upload documentation
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation-${{ github.run_number }}
+        path: |
+          workspace/build/artifacts/docs-*/
+          workspace/application/docs/
+        retention-days: ${{ needs.config.outputs.artifacts_retention }}
+        if-no-files-found: warn
+
+  # Job 7: Collect Final Results and Report
   results:
     name: 📊 Build Results
     runs-on: ubuntu-latest
-    needs: [config, build-library, build-application, test]
+    needs: [config, build-library, build-application, test, docs]
     if: always()
     
     steps:
@@ -486,6 +511,7 @@ jobs:
         library_status="${{ needs.build-library.result }}"
         app_status="${{ needs.build-application.result }}"
         test_status="${{ needs.test.result }}"
+        docs_status="${{ needs.docs.result }}"
         
         case "$library_status" in
           "success") echo "| Static Library | ✅ Built | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
@@ -506,6 +532,13 @@ jobs:
           "failure") echo "| Tests | ❌ Failed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
           "skipped") echo "| Tests | ⏭️ Skipped | - |" >> $GITHUB_STEP_SUMMARY ;;
           *) echo "| Tests | ❓ Unknown | - |" >> $GITHUB_STEP_SUMMARY ;;
+        esac
+        
+        case "$docs_status" in
+          "success") echo "| Documentation | ✅ Generated | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "failure") echo "| Documentation | ❌ Failed | [View Job](../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY ;;
+          "skipped") echo "| Documentation | ⏭️ Skipped | - |" >> $GITHUB_STEP_SUMMARY ;;
+          *) echo "| Documentation | ❓ Unknown | - |" >> $GITHUB_STEP_SUMMARY ;;
         esac
         
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -540,19 +573,20 @@ jobs:
           const libraryStatus = '${{ needs.build-library.result }}';
           const applicationStatus = '${{ needs.build-application.result }}';
           const testsStatus = '${{ needs.test.result }}';
+          const docsStatus = '${{ needs.docs.result }}';
           
           // Parse repository owner and name
           const [owner, repo] = sourceRepo.split('/');
           
           // Determine overall status
           let statusEmoji, statusMessage, buildResult;
-          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
+          const hasFailures = [libraryStatus, applicationStatus, testsStatus, docsStatus].includes('failure');
           
           if (hasFailures) {
             statusEmoji = '❌';
             statusMessage = 'Build failed. Please check the individual job logs for details.';
             buildResult = 'Failed';
-          } else if ([libraryStatus, applicationStatus, testsStatus].every(s => s === 'success' || s === 'skipped')) {
+          } else if ([libraryStatus, applicationStatus, testsStatus, docsStatus].every(s => s === 'success' || s === 'skipped')) {
             statusEmoji = '✅';
             statusMessage = 'All builds completed successfully!';
             buildResult = 'Success';

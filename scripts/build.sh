@@ -73,41 +73,28 @@ log_command() {
 check_workspace() {
     print_header "Validating Workspace Environment"
     
-    # Check if we're in a repo workspace
-    if [ ! -d "$WORKSPACE_ROOT/.repo" ]; then
-        print_error "Not in a repo workspace. Please run this script from the build directory of a repo workspace."
-        print_info "Expected directory structure:"
-        print_info "  workspace/"
-        print_info "  ├── .repo/"
-        print_info "  ├── application/"
-        print_info "  ├── libs/calculator/"
-        print_info "  └── build/ (current directory)"
-        exit 1
-    fi
-    
-    print_success "Repo workspace detected"
-    
-    # Check required repositories
-    local missing_repos=()
+    # Check if we have the required directory structure for building
+    local missing_dirs=()
     
     if [ ! -d "$WORKSPACE_ROOT/$STATIC_LIB_PATH" ]; then
-        missing_repos+=("static_library -> $STATIC_LIB_PATH")
+        missing_dirs+=("static_library -> $STATIC_LIB_PATH")
     fi
     
     if [ ! -d "$WORKSPACE_ROOT/$APPLICATION_PATH" ]; then
-        missing_repos+=("application -> $APPLICATION_PATH")
+        missing_dirs+=("application -> $APPLICATION_PATH")
     fi
     
-    if [ ${#missing_repos[@]} -gt 0 ]; then
-        print_error "Missing required repositories:"
-        for repo in "${missing_repos[@]}"; do
-            print_error "  $repo"
+    if [ ${#missing_dirs[@]} -gt 0 ]; then
+        print_error "Missing required source directories:"
+        for dir in "${missing_dirs[@]}"; do
+            print_error "  $dir"
         done
-        print_info "Run 'repo sync' from workspace root to fetch missing repositories"
+        print_info "Please ensure the workspace is properly set up with all required repositories"
+        print_info "You can use scripts/setup-workspace.sh to initialize the workspace"
         exit 1
     fi
     
-    print_success "All required repositories found"
+    print_success "All required source directories found"
     
     # Create build directories
     mkdir -p "$ARTIFACTS_DIR" "$LOGS_DIR"
@@ -149,43 +136,6 @@ check_dependencies() {
             print_warning "  $tool"
         done
     fi
-}
-
-# Repository status check
-check_repo_status() {
-    # Skip repo status check in CI environment
-    if [ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]; then
-        print_header "Repository Status Check"
-        print_info "CI environment detected - skipping repo status check"
-        print_success "All repositories are clean (CI environment)"
-        return 0
-    fi
-    
-    print_header "Repository Status Check"
-    
-    cd "$WORKSPACE_ROOT"
-    
-    # Check if any repositories have uncommitted changes
-    if repo status | grep -q "project.*dirty"; then
-        print_warning "Some repositories have uncommitted changes:"
-        repo status | grep "project.*dirty"
-        
-        if [ "$IGNORE_DIRTY" != "true" ]; then
-            read -p "Continue with build? (y/N): " confirm
-            if [[ ! $confirm =~ ^[Yy]$ ]]; then
-                print_info "Build cancelled. Commit or stash changes before building."
-                exit 1
-            fi
-        fi
-    else
-        print_success "All repositories are clean"
-    fi
-    
-    # Show current repository versions
-    print_info "Repository versions:"
-    repo forall -c 'echo "  $(basename $REPO_PATH): $(git rev-parse --short HEAD) ($(git symbolic-ref --short HEAD 2>/dev/null || echo detached))"'
-    
-    cd "$BUILD_DIR"
 }
 
 # Clean previous builds
@@ -416,14 +366,6 @@ Build Information:
 - Parallel Jobs: $PARALLEL_JOBS
 - Workspace: $WORKSPACE_ROOT
 
-Repository Versions:
-EOF
-    
-    cd "$WORKSPACE_ROOT"
-    repo forall -c 'echo "- $(basename $REPO_PATH): $(git rev-parse --short HEAD) ($(git symbolic-ref --short HEAD 2>/dev/null || echo detached))"' >> "$report_file"
-    
-    cat >> "$report_file" << EOF
-
 Build Artifacts:
 EOF
     
@@ -454,7 +396,7 @@ show_usage() {
     echo "  analyze      - Run static analysis only"
     echo "  memory       - Run memory tests only"
     echo "  docs         - Generate documentation only"
-    echo "  status       - Show repository status"
+    echo "  status       - Show workspace information (for repo status use setup-workspace.sh)"
     echo ""
     echo "Options:"
     echo "  --debug      - Build in debug mode"
@@ -545,7 +487,6 @@ main() {
                 clean_builds
                 ;;
             build)
-                check_repo_status
                 build_static_library
                 build_application
                 ;;
@@ -562,10 +503,10 @@ main() {
                 generate_docs
                 ;;
             status)
-                check_repo_status
+                print_info "Repository status checking moved to setup-workspace.sh"
+                print_info "Use: ./scripts/setup-workspace.sh status"
                 ;;
             all)
-                check_repo_status
                 clean_builds
                 build_static_library
                 build_application
