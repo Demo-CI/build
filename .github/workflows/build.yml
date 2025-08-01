@@ -25,10 +25,20 @@ on:
         options:
         - release
         - debug
+      artifacts_retention:
+        description: 'Artifacts retention (days)'
+        required: false
+        default: '30'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    env:
+      # Artifact retention configuration (in days)
+      # Used for both build artifacts and logs
+      BUILD_ARTIFACTS_RETENTION: ${{ inputs.artifacts_retention || '30' }}
     
     steps:
     - name: Extract build configuration
@@ -86,6 +96,7 @@ jobs:
         echo "Build Type: $BUILD_TYPE"
         echo "Save Logs: $SAVE_LOGS"
         echo "Trigger: $TRIGGER_REASON"
+        echo "📦 Artifacts Retention: ${{ env.BUILD_ARTIFACTS_RETENTION }} days"
     
     - name: Checkout build repository
       uses: actions/checkout@v4
@@ -266,7 +277,7 @@ jobs:
       with:
         name: build-artifacts-${{ github.run_number }}
         path: artifacts/
-        retention-days: 30
+        retention-days: ${{ env.BUILD_ARTIFACTS_RETENTION }}
     
     - name: Upload build logs
       if: steps.config.outputs.save_logs == 'true'
@@ -277,7 +288,7 @@ jobs:
           workspace/build/logs/
           workspace/build/build.log
           workspace/*/build/
-        retention-days: 90
+        retention-days: ${{ env.BUILD_ARTIFACTS_RETENTION }}
         if-no-files-found: warn
     
     - name: Build summary
@@ -291,6 +302,7 @@ jobs:
         echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
         echo "| Build Type | \`${{ steps.config.outputs.build_type }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "| Verbose Logs | \`${{ steps.config.outputs.save_logs }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Artifacts Retention | \`${{ env.BUILD_ARTIFACTS_RETENTION }} days\` |" >> $GITHUB_STEP_SUMMARY
         echo "| Trigger Reason | ${{ steps.config.outputs.trigger_reason }} |" >> $GITHUB_STEP_SUMMARY
         
         if [[ "${{ steps.config.outputs.source_repo }}" != "unknown" ]]; then
@@ -312,10 +324,10 @@ jobs:
         
         # Artifacts Information
         echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-        echo "- **Build Artifacts:** Available for 30 days" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Artifacts:** Available for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
         
         if [[ "${{ steps.config.outputs.save_logs }}" == "true" ]]; then
-          echo "- **Build Logs:** Detailed logs saved for 90 days" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Logs:** Detailed logs saved for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
         else
           echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
         fi
