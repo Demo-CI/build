@@ -53,6 +53,7 @@ jobs:
         SOURCE_REPO="unknown"
         SOURCE_SHA="unknown"
         SOURCE_REF="unknown"
+        PR_NUMBER=""
         
         # Extract from repository dispatch payload
         if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
@@ -62,6 +63,7 @@ jobs:
           SOURCE_REPO="${{ github.event.client_payload.repository || 'unknown' }}"
           SOURCE_SHA="${{ github.event.client_payload.sha || 'unknown' }}"
           SOURCE_REF="${{ github.event.client_payload.ref_name || 'unknown' }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number || '' }}"
           
           echo "📡 Repository Dispatch Event: ${{ github.event.action }}"
           echo "🏗️  Build Type: $BUILD_TYPE"
@@ -90,6 +92,7 @@ jobs:
         echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
         echo "source_sha=$SOURCE_SHA" >> $GITHUB_OUTPUT
         echo "source_ref=$SOURCE_REF" >> $GITHUB_OUTPUT
+        echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
         
         echo "" 
         echo "=== Configuration Summary ==="
@@ -201,7 +204,9 @@ jobs:
         echo "- Build application: $(grep 'build_application=' $GITHUB_OUTPUT | cut -d'=' -f2)"
     
     - name: Build static library
+      id: build-library
       if: steps.strategy.outputs.build_library == 'true'
+      continue-on-error: true
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
@@ -215,7 +220,9 @@ jobs:
         ./scripts/build.sh build
     
     - name: Build application
+      id: build-application
       if: steps.strategy.outputs.build_application == 'true'
+      continue-on-error: true
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
@@ -232,6 +239,8 @@ jobs:
         fi
     
     - name: Run tests
+      id: run-tests
+      continue-on-error: true
       env:
         BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
@@ -317,9 +326,37 @@ jobs:
         echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
         echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
         echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
-        echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
-        echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        
+        # Dynamic status based on step outcomes
+        if [[ "${{ steps.build-library.outcome }}" == "success" ]]; then
+          echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-library.outcome }}" == "failure" ]]; then
+          echo "| Static Library | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-library.outcome }}" == "skipped" ]]; then
+          echo "| Static Library | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Static Library | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ steps.build-application.outcome }}" == "success" ]]; then
+          echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-application.outcome }}" == "failure" ]]; then
+          echo "| Application | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-application.outcome }}" == "skipped" ]]; then
+          echo "| Application | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Application | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ steps.run-tests.outcome }}" == "success" ]]; then
+          echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.run-tests.outcome }}" == "failure" ]]; then
+          echo "| Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.run-tests.outcome }}" == "skipped" ]]; then
+          echo "| Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Tests | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
         echo "" >> $GITHUB_STEP_SUMMARY
         
         # Artifacts Information
@@ -331,3 +368,96 @@ jobs:
         else
           echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
         fi
+    
+    - name: Post build results to source PR
+      if: always() && github.event_name == 'repository_dispatch' && steps.config.outputs.pr_number != ''
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.PAT_TOKEN }}
+        script: |
+          const sourceRepo = '${{ steps.config.outputs.source_repo }}';
+          const prNumber = '${{ steps.config.outputs.pr_number }}';
+          const buildType = '${{ steps.config.outputs.build_type }}';
+          const saveLogs = '${{ steps.config.outputs.save_logs }}';
+          const buildStatus = '${{ job.status }}';
+          const runId = '${{ github.run_id }}';
+          const runNumber = '${{ github.run_number }}';
+          
+          // Get individual step results
+          const libraryStatus = '${{ steps.build-library.outcome }}';
+          const applicationStatus = '${{ steps.build-application.outcome }}';
+          const testsStatus = '${{ steps.run-tests.outcome }}';
+          
+          // Parse repository owner and name
+          const [owner, repo] = sourceRepo.split('/');
+          
+          // Determine overall status
+          let statusEmoji, statusMessage, buildResult;
+          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
+          
+          if (hasFailures) {
+            statusEmoji = '❌';
+            statusMessage = 'Build failed. Please check the logs for details.';
+            buildResult = 'Failed';
+          } else if (buildStatus === 'success') {
+            statusEmoji = '✅';
+            statusMessage = 'Build completed successfully!';
+            buildResult = 'Success';
+          } else {
+            statusEmoji = '⚠️';
+            statusMessage = 'Build completed with warnings.';
+            buildResult = 'Warning';
+          }
+          
+          // Build detailed results
+          const getStepStatus = (status) => {
+            switch(status) {
+              case 'success': return '✅ Success';
+              case 'failure': return '❌ Failed';
+              case 'skipped': return '⏭️ Skipped';
+              default: return '❓ Unknown';
+            }
+          };
+          
+          // Build the comment body
+          const commentBody = `
+          ## ${statusEmoji} Centralized Build ${buildResult}
+          
+          **Build Configuration:**
+          - **Type:** \`${buildType}\`
+          - **Save Logs:** \`${saveLogs}\`
+          - **Run:** [#${runNumber}](https://github.com/Demo-CI/build/actions/runs/${runId})
+          
+          **Build Steps:**
+          - **Static Library:** ${getStepStatus(libraryStatus)}
+          - **Application:** ${getStepStatus(applicationStatus)}
+          - **Tests:** ${getStepStatus(testsStatus)}
+          
+          **Summary:**
+          ${statusMessage}
+          
+          **Artifacts:**
+          - 📦 Build artifacts available for ${{ env.BUILD_ARTIFACTS_RETENTION }} days
+          ${saveLogs === 'true' ? '- 📝 Detailed build logs saved' : '- 📝 Standard logging only'}
+          
+          **Actions:**
+          - [View detailed build logs](https://github.com/Demo-CI/build/actions/runs/${runId})
+          - [Download artifacts](https://github.com/Demo-CI/build/actions/runs/${runId})
+          
+          ---
+          *This comment was automatically generated by the centralized build system.*
+          `;
+          
+          try {
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: parseInt(prNumber),
+              body: commentBody
+            });
+            
+            console.log(\`Posted build results to PR #\${prNumber} in \${sourceRepo}\`);
+          } catch (error) {
+            console.error('Failed to post comment to source PR:', error.message);
+            // Don't fail the workflow if commenting fails
+          }
