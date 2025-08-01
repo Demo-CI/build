@@ -222,6 +222,10 @@ runs:
             
             // Post confirmation comment for JSON triggers
             if (context.eventName === 'issue_comment' && context.issue?.number) {
+              const buildType = '${{ steps.determine.outputs.build_type }}';
+              const saveLogs = '${{ steps.determine.outputs.save_logs }}';
+              const reason = '${{ steps.determine.outputs.reason }}';
+              
               const confirmComment = 
               "✅ **Build Triggered Successfully**\n\n" +
               "**Configuration:**\n" +
