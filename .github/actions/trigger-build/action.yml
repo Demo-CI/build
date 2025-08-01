@@ -46,25 +46,34 @@ runs:
       uses: actions/github-script@v7
       with:
         script: |
+          console.log('🔍 Starting JSON comment parsing...');
+          console.log(`Event: ${context.eventName}`);
+          console.log(`Issue number: ${context.issue?.number}`);
+          console.log(`PR context: ${context.payload.issue?.pull_request ? 'Yes' : 'No'}`);
+          
           const comment = context.payload.comment.body;
+          console.log(`Comment preview: ${comment.substring(0, 100)}...`);
           
           // Look for JSON blocks in the comment
           const jsonMatch = comment.match(/```json\s*(\{[\s\S]*?\})\s*```/) || 
                            comment.match(/(\{[\s\S]*?\})/);
           
           if (!jsonMatch) {
-            console.log('No JSON found in comment');
+            console.log('❌ No JSON found in comment');
             core.setOutput('should_build', 'false');
             return;
           }
+          
+          console.log(`📋 Found JSON: ${jsonMatch[1]}`);
           
           try {
             const buildConfig = JSON.parse(jsonMatch[1]);
             console.log('Parsed build config:', buildConfig);
             
-            // Validate required fields
-            if (!buildConfig.action || buildConfig.action !== 'build') {
-              console.log('Not a build action, skipping');
+            // Make action field optional - if not specified, assume 'build'
+            const action = buildConfig.action || 'build';
+            if (action !== 'build') {
+              console.log(`Not a build action (action: ${action}), skipping`);
               core.setOutput('should_build', 'false');
               return;
             }
@@ -73,6 +82,12 @@ runs:
             const buildType = buildConfig.build_type || 'release';
             const saveLogs = buildConfig.save_logs || false;
             const reason = buildConfig.reason || 'JSON comment trigger';
+            
+            console.log('📋 Parsed configuration:');
+            console.log(`  - Action: ${action}`);
+            console.log(`  - Build Type: ${buildType}`);
+            console.log(`  - Save Logs: ${saveLogs}`);
+            console.log(`  - Reason: ${reason}`);
             
             // Validate build_type
             if (!['debug', 'release'].includes(buildType)) {
@@ -86,9 +101,9 @@ runs:
             core.setOutput('reason', reason);
             
             console.log('✅ Valid build configuration found');
-            console.log(`Build Type: ${buildType}`);
-            console.log(`Save Logs: ${saveLogs}`);
-            console.log(`Reason: ${reason}`);
+            console.log(`🔧 Build Type: ${buildType}`);
+            console.log(`📝 Save Logs: ${saveLogs}`);
+            console.log(`💬 Reason: ${reason}`);
             
           } catch (error) {
             console.error('❌ Failed to parse JSON:', error.message);
@@ -102,7 +117,6 @@ runs:
             **Valid format:**
             \`\`\`json
             {
-              "action": "build",
               "build_type": "debug",
               "save_logs": true,
               "reason": "Testing debug build"
@@ -110,10 +124,12 @@ runs:
             \`\`\`
             
             **Parameters:**
-            - \`action\`: Must be "build"
+            - \`action\`: "build" (optional, default: "build")
             - \`build_type\`: "debug" or "release" (optional, default: "release")
             - \`save_logs\`: true or false (optional, default: false)
             - \`reason\`: Description text (optional)
+            
+            **Your JSON was:** \`${jsonMatch ? jsonMatch[1] : 'not found'}\`
             `;
             
             await github.rest.issues.createComment({
@@ -131,10 +147,13 @@ runs:
       shell: bash
       run: |
         echo "=== Determining Build Configuration ==="
+        echo "🔍 Event Name: ${{ github.event_name }}"
+        echo "🔍 Parse Step Outcome: ${{ steps.parse.outcome }}"
+        echo "🔍 Parse Should Build: ${{ steps.parse.outputs.should_build }}"
         
         case "${{ github.event_name }}" in
           "pull_request")
-            echo "PR trigger - building with defaults"
+            echo "📝 PR trigger - building with defaults"
             echo "should_build=true" >> $GITHUB_OUTPUT
             echo "build_type=release" >> $GITHUB_OUTPUT
             echo "save_logs=false" >> $GITHUB_OUTPUT
@@ -142,28 +161,35 @@ runs:
             ;;
           "issue_comment")
             if [[ "${{ steps.parse.outputs.should_build }}" == "true" ]]; then
-              echo "JSON comment trigger - using parsed config"
+              echo "📝 JSON comment trigger - using parsed config"
               echo "should_build=true" >> $GITHUB_OUTPUT
               echo "build_type=${{ steps.parse.outputs.build_type }}" >> $GITHUB_OUTPUT
               echo "save_logs=${{ steps.parse.outputs.save_logs }}" >> $GITHUB_OUTPUT
               echo "reason=${{ steps.parse.outputs.reason }}" >> $GITHUB_OUTPUT
             else
-              echo "Comment without valid JSON - skipping"
+              echo "📝 Comment without valid JSON - skipping"
               echo "should_build=false" >> $GITHUB_OUTPUT
             fi
             ;;
           "workflow_dispatch")
-            echo "Manual trigger - using inputs"
+            echo "📝 Manual trigger - using inputs"
             echo "should_build=true" >> $GITHUB_OUTPUT
             echo "build_type=${{ inputs.manual_build_type }}" >> $GITHUB_OUTPUT
             echo "save_logs=${{ inputs.manual_save_logs }}" >> $GITHUB_OUTPUT
             echo "reason=${{ inputs.manual_reason }}" >> $GITHUB_OUTPUT
             ;;
           *)
-            echo "Unknown trigger - skipping"
+            echo "❌ Unknown trigger - skipping"
             echo "should_build=false" >> $GITHUB_OUTPUT
             ;;
         esac
+        
+        echo ""
+        echo "=== Final Configuration ==="
+        echo "🏗️  Should Build: $(grep 'should_build=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        echo "🔧 Build Type: $(grep 'build_type=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
+        echo "📝 Save Logs: $(grep 'save_logs=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
+        echo "💬 Reason: $(grep 'reason=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
 
     - name: Trigger centralized build
       if: steps.determine.outputs.should_build == 'true'
