@@ -31,6 +31,62 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Extract build configuration
+      id: config
+      run: |
+        echo "=== Extracting Build Configuration ==="
+        
+        # Default values
+        BUILD_TYPE="release"
+        SAVE_LOGS="false"
+        TRIGGER_REASON="Manual build"
+        SOURCE_REPO="unknown"
+        SOURCE_SHA="unknown"
+        SOURCE_REF="unknown"
+        
+        # Extract from repository dispatch payload
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          BUILD_TYPE="${{ github.event.client_payload.build_type || 'release' }}"
+          SAVE_LOGS="${{ github.event.client_payload.save_logs || 'false' }}"
+          TRIGGER_REASON="${{ github.event.client_payload.commit_message || 'Repository dispatch trigger' }}"
+          SOURCE_REPO="${{ github.event.client_payload.repository || 'unknown' }}"
+          SOURCE_SHA="${{ github.event.client_payload.sha || 'unknown' }}"
+          SOURCE_REF="${{ github.event.client_payload.ref_name || 'unknown' }}"
+          
+          echo "📡 Repository Dispatch Event: ${{ github.event.action }}"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "📝 Save Logs: $SAVE_LOGS"
+          echo "📁 Source Repo: $SOURCE_REPO"
+          echo "🔗 Source SHA: $SOURCE_SHA"
+          echo "🌿 Source Branch: $SOURCE_REF"
+          echo "💬 Reason: $TRIGGER_REASON"
+        fi
+        
+        # Extract from manual workflow dispatch
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          SAVE_LOGS="false"  # Manual triggers don't have save_logs input yet
+          TRIGGER_REASON="Manual workflow dispatch"
+          
+          echo "🎮 Manual Workflow Dispatch"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "🎯 Target: ${{ inputs.build_target || 'all' }}"
+        fi
+        
+        # Set outputs for use in subsequent steps
+        echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+        echo "save_logs=$SAVE_LOGS" >> $GITHUB_OUTPUT
+        echo "trigger_reason=$TRIGGER_REASON" >> $GITHUB_OUTPUT
+        echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+        echo "source_sha=$SOURCE_SHA" >> $GITHUB_OUTPUT
+        echo "source_ref=$SOURCE_REF" >> $GITHUB_OUTPUT
+        
+        echo "" 
+        echo "=== Configuration Summary ==="
+        echo "Build Type: $BUILD_TYPE"
+        echo "Save Logs: $SAVE_LOGS"
+        echo "Trigger: $TRIGGER_REASON"
+    
     - name: Checkout build repository
       uses: actions/checkout@v4
     
@@ -135,18 +191,28 @@ jobs:
     
     - name: Build static library
       if: steps.strategy.outputs.build_library == 'true'
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
         cd workspace/build
         echo "=== Building Static Library ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
         
         # Use the build script to build the library only
         ./scripts/build.sh build
     
     - name: Build application
       if: steps.strategy.outputs.build_application == 'true'
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
         cd workspace/build
         echo "=== Building Application ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
         
         # The build script will build both library and application
         if [[ "${{ steps.strategy.outputs.build_library }}" != "true" ]]; then
@@ -155,9 +221,14 @@ jobs:
         fi
     
     - name: Run tests
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
         cd workspace/build
         echo "=== Running Tests ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
         
         # Run tests using the build script
         ./scripts/build.sh test
@@ -197,10 +268,41 @@ jobs:
         path: artifacts/
         retention-days: 30
     
+    - name: Upload build logs
+      if: steps.config.outputs.save_logs == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.run_number }}
+        path: |
+          workspace/build/logs/
+          workspace/build/build.log
+          workspace/*/build/
+        retention-days: 90
+        if-no-files-found: warn
+    
     - name: Build summary
       run: |
         echo "## 🚀 Build Complete" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Configuration Table
+        echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Type | \`${{ steps.config.outputs.build_type }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Verbose Logs | \`${{ steps.config.outputs.save_logs }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Trigger Reason | ${{ steps.config.outputs.trigger_reason }} |" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ steps.config.outputs.source_repo }}" != "unknown" ]]; then
+          echo "| Source Repository | \`${{ steps.config.outputs.source_repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Branch | \`${{ steps.config.outputs.source_ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source SHA | \`${{ steps.config.outputs.source_sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Results Table
+        echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
         echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
         echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
         echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
@@ -208,12 +310,12 @@ jobs:
         echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-          echo "**Trigger:** Repository dispatch (${{ github.event.action }})" >> $GITHUB_STEP_SUMMARY
-          echo "**Source:** ${{ github.event.client_payload.repository || 'Unknown' }}" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "**Trigger:** Manual (${{ github.event.inputs.build_target || 'all' }})" >> $GITHUB_STEP_SUMMARY
-        fi
+        # Artifacts Information
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Artifacts:** Available for 30 days" >> $GITHUB_STEP_SUMMARY
         
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Artifacts:** Available in the build artifacts for 30 days" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ steps.config.outputs.save_logs }}" == "true" ]]; then
+          echo "- **Build Logs:** Detailed logs saved for 90 days" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
+        fi
