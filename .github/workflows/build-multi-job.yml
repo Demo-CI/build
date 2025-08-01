@@ -597,19 +597,27 @@ jobs:
           
           // Determine overall status
           let statusEmoji, statusMessage, buildResult;
+          
+          // Check for any failures first
           const hasFailures = [libraryStatus, applicationStatus, testsStatus, docsStatus].includes('failure');
+          
+          // Check if required builds succeeded
+          const librarySucceeded = libraryStatus === 'success';
+          const applicationSucceeded = applicationStatus === 'success' || applicationStatus === 'skipped';
+          const testsSucceeded = testsStatus === 'success' || testsStatus === 'skipped';
+          const docsSucceeded = docsStatus === 'success' || docsStatus === 'skipped';
           
           if (hasFailures) {
             statusEmoji = '❌';
             statusMessage = 'Build failed. Please check the individual job logs for details.';
             buildResult = 'Failed';
-          } else if ([libraryStatus, applicationStatus, testsStatus, docsStatus].every(s => s === 'success' || s === 'skipped')) {
+          } else if (librarySucceeded && applicationSucceeded && testsSucceeded && docsSucceeded) {
             statusEmoji = '✅';
             statusMessage = 'All builds completed successfully!';
             buildResult = 'Success';
           } else {
             statusEmoji = '⚠️';
-            statusMessage = 'Build completed with warnings.';
+            statusMessage = 'Build completed with warnings or some jobs were cancelled.';
             buildResult = 'Warning';
           }
           
