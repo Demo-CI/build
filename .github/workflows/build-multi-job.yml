@@ -172,16 +172,6 @@ jobs:
     - name: Checkout build repository
       uses: actions/checkout@v4
     
-    - name: Setup workspace with manifest
-      run: |
-        echo "=== Setting up workspace using manifest ==="
-        
-        # Use the dedicated setup-workspace.sh script to setup the workspace
-        # The script will create the workspace directory and initialize it
-        ./scripts/setup-workspace.sh workspace
-        
-        echo "Workspace setup complete using manifest"
-    
     - name: Install build dependencies
       run: |
         sudo apt-get update
@@ -191,7 +181,34 @@ jobs:
           clang-format \
           valgrind \
           doxygen \
-          graphviz
+          graphviz \
+          python3 \
+          python3-pip \
+          curl \
+          git
+        
+        # Install Google Repo tool
+        mkdir -p ~/.bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+        chmod a+rx ~/.bin/repo
+        echo "$HOME/.bin" >> $GITHUB_PATH
+        
+        # Configure Git for repo operations
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Install gcovr for code coverage (used by CI script)
+        pip3 install gcovr
+    
+    - name: Setup workspace with manifest
+      run: |
+        echo "=== Setting up workspace using manifest ==="
+        
+        # Use the dedicated setup-workspace.sh script to setup the workspace
+        # The script will create the workspace directory and initialize it
+        ./scripts/setup-workspace.sh workspace
+        
+        echo "Workspace setup complete using manifest"
     
     - name: Cache workspace
       uses: actions/cache@v4
