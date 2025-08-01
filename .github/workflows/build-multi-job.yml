@@ -252,6 +252,9 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
+        # Ensure repo tool is in PATH
+        export PATH="$HOME/.local/bin:$PATH"
+        
         cd workspace/build
         echo "=== Building Static Library ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
@@ -311,6 +314,9 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
+        # Ensure repo tool is in PATH
+        export PATH="$HOME/.local/bin:$PATH"
+        
         cd workspace/build
         echo "=== Building Application ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
@@ -377,6 +383,9 @@ jobs:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
       run: |
+        # Ensure repo tool is in PATH
+        export PATH="$HOME/.local/bin:$PATH"
+        
         cd workspace/build
         echo "=== Running Tests ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
