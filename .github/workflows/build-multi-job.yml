@@ -294,7 +294,29 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: library-artifacts-${{ github.run_number }}
-        path: workspace/libs/calculator/
+        path: workspace/build/downloaded-artifacts/
+    
+    - name: Restore library to expected location
+      run: |
+        # Copy library back to where application build expects it
+        mkdir -p workspace/libs/calculator/lib
+        mkdir -p workspace/libs/calculator/include
+        
+        # Copy library and headers to original locations
+        if [ -f "workspace/build/downloaded-artifacts/libcalculator.a" ]; then
+          cp workspace/build/downloaded-artifacts/libcalculator.a workspace/libs/calculator/lib/
+          echo "✅ Library restored to workspace/libs/calculator/lib/"
+        else
+          echo "❌ Library artifact not found in downloaded artifacts"
+          ls -la workspace/build/downloaded-artifacts/
+          exit 1
+        fi
+        
+        # Copy headers if they exist
+        if ls workspace/build/downloaded-artifacts/*.h 1> /dev/null 2>&1; then
+          cp workspace/build/downloaded-artifacts/*.h workspace/libs/calculator/include/
+          echo "✅ Headers restored to workspace/libs/calculator/include/"
+        fi
     
     - name: Build application
       id: build
@@ -592,14 +614,28 @@ jobs:
           const testsStatus = '${{ needs.test.result }}';
           const docsStatus = '${{ needs.docs.result }}';
           
+          // Debug logging to troubleshoot status issues
+          console.log('Job Status Debug:');
+          console.log('- Library Status:', libraryStatus);
+          console.log('- Application Status:', applicationStatus);
+          console.log('- Tests Status:', testsStatus);
+          console.log('- Docs Status:', docsStatus);
+          
           // Parse repository owner and name
           const [owner, repo] = sourceRepo.split('/');
           
           // Determine overall status
           let statusEmoji, statusMessage, buildResult;
           
-          // Check for any failures first
-          const hasFailures = [libraryStatus, applicationStatus, testsStatus, docsStatus].includes('failure');
+          // Check for any failures first - be more explicit about failure detection
+          const allStatuses = [libraryStatus, applicationStatus, testsStatus, docsStatus];
+          const hasFailures = allStatuses.includes('failure');
+          const hasCancelled = allStatuses.includes('cancelled');
+          
+          console.log('Status Analysis:');
+          console.log('- Has Failures:', hasFailures);
+          console.log('- Has Cancelled:', hasCancelled);
+          console.log('- All Statuses:', allStatuses);
           
           // Check if required builds succeeded
           const librarySucceeded = libraryStatus === 'success';
@@ -607,18 +643,32 @@ jobs:
           const testsSucceeded = testsStatus === 'success' || testsStatus === 'skipped';
           const docsSucceeded = docsStatus === 'success' || docsStatus === 'skipped';
           
+          console.log('Success Analysis:');
+          console.log('- Library Succeeded:', librarySucceeded);
+          console.log('- Application Succeeded:', applicationSucceeded);
+          console.log('- Tests Succeeded:', testsSucceeded);
+          console.log('- Docs Succeeded:', docsSucceeded);
+          
           if (hasFailures) {
             statusEmoji = '❌';
             statusMessage = 'Build failed. Please check the individual job logs for details.';
             buildResult = 'Failed';
+            console.log('Result: FAILED (due to failures)');
+          } else if (hasCancelled) {
+            statusEmoji = '⚠️';
+            statusMessage = 'Build was cancelled or interrupted.';
+            buildResult = 'Cancelled';
+            console.log('Result: CANCELLED');
           } else if (librarySucceeded && applicationSucceeded && testsSucceeded && docsSucceeded) {
             statusEmoji = '✅';
             statusMessage = 'All builds completed successfully!';
             buildResult = 'Success';
+            console.log('Result: SUCCESS');
           } else {
             statusEmoji = '⚠️';
             statusMessage = 'Build completed with warnings or some jobs were cancelled.';
             buildResult = 'Warning';
+            console.log('Result: WARNING');
           }
           
           // Build detailed results
