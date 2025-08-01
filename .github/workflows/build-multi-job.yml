@@ -251,16 +251,17 @@ jobs:
       env:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+        IGNORE_DIRTY: "true"
+        CI: "true"
       run: |
-        # Ensure repo tool is in PATH
-        export PATH="$HOME/.local/bin:$PATH"
-        
         cd workspace/build
         echo "=== Building Static Library ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
+        echo "🤖 CI Environment: Skipping repo status checks"
         
         # Use the build script to build (includes library)
+        # In CI, we skip repo status checks since they require repo tool
         ./scripts/build.sh build
         
         # Verify library was created in the expected location
@@ -313,14 +314,14 @@ jobs:
       env:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+        IGNORE_DIRTY: "true"
+        CI: "true"
       run: |
-        # Ensure repo tool is in PATH
-        export PATH="$HOME/.local/bin:$PATH"
-        
         cd workspace/build
         echo "=== Building Application ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
+        echo "🤖 CI Environment: Skipping repo status checks"
         
         # Verify static library exists (already built by build-library job)
         if [ ! -f "../libs/calculator/lib/libcalculator.a" ]; then
@@ -382,14 +383,14 @@ jobs:
       env:
         BUILD_TYPE: ${{ needs.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
         VERBOSE: ${{ needs.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+        IGNORE_DIRTY: "true"
+        CI: "true"
       run: |
-        # Ensure repo tool is in PATH
-        export PATH="$HOME/.local/bin:$PATH"
-        
         cd workspace/build
         echo "=== Running Tests ==="
         echo "🏗️  Build Type: $BUILD_TYPE"
         echo "📝 Verbose Logging: $VERBOSE"
+        echo "🤖 CI Environment: Skipping repo status checks"
         
         # Verify application and test runner exist
         if [ ! -f "../application/calculator" ]; then

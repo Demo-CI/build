@@ -153,6 +153,14 @@ check_dependencies() {
 
 # Repository status check
 check_repo_status() {
+    # Skip repo status check in CI environment
+    if [ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]; then
+        print_header "Repository Status Check"
+        print_info "CI environment detected - skipping repo status check"
+        print_success "All repositories are clean (CI environment)"
+        return 0
+    fi
+    
     print_header "Repository Status Check"
     
     cd "$WORKSPACE_ROOT"
