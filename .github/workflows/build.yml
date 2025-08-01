@@ -34,27 +34,42 @@ jobs:
     - name: Checkout build repository
       uses: actions/checkout@v4
     
-    - name: Checkout source repositories
+    - name: Setup workspace with manifest
       run: |
-        echo "=== Setting up workspace ==="
+        echo "=== Setting up workspace using manifest ==="
         
-        # Create workspace structure
-        mkdir -p workspace
+        # Install Google Repo tool
+        mkdir -p ~/.local/bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+        chmod +x ~/.local/bin/repo
+        export PATH="$HOME/.local/bin:$PATH"
+        
+        # Verify repo tool installation
+        repo --version
+        
+        # Configure git (required by repo)
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Create workspace using manifest
+        mkdir workspace
         cd workspace
         
-        # Clone application repository
-        echo "Cloning application repository..."
-        git clone https://github.com/Demo-CI/application.git
+        # Initialize repo workspace with manifest
+        repo init -u https://github.com/Demo-CI/manifest.git -m default.xml
         
-        # Clone static library repository
-        echo "Cloning static library repository..."
-        git clone https://github.com/Demo-CI/static_library.git libs/calculator
+        # Sync all repositories
+        repo sync -j4
         
-        # Copy build scripts to workspace
-        cp -r ../scripts ../run.sh .
-        
-        echo "Workspace setup complete"
+        # Verify workspace structure
+        echo "=== Workspace structure ==="
         ls -la
+        echo "=== Repository list ==="
+        repo list
+        echo "=== Repository status ==="
+        repo status
+        
+        echo "Workspace setup complete using manifest"
     
     - name: Install build dependencies
       run: |
@@ -121,7 +136,7 @@ jobs:
     - name: Build static library
       if: steps.strategy.outputs.build_library == 'true'
       run: |
-        cd workspace
+        cd workspace/build
         echo "=== Building Static Library ==="
         
         # Use the build script to build the library only
@@ -130,7 +145,7 @@ jobs:
     - name: Build application
       if: steps.strategy.outputs.build_application == 'true'
       run: |
-        cd workspace
+        cd workspace/build
         echo "=== Building Application ==="
         
         # The build script will build both library and application
@@ -141,7 +156,7 @@ jobs:
     
     - name: Run tests
       run: |
-        cd workspace
+        cd workspace/build
         echo "=== Running Tests ==="
         
         # Run tests using the build script
@@ -149,26 +164,31 @@ jobs:
     
     - name: Collect artifacts
       run: |
-        cd workspace
+        cd workspace/build
         echo "=== Collecting Build Artifacts ==="
         
         # Create artifacts directory
-        mkdir -p ../artifacts
+        mkdir -p ../../artifacts
         
-        # Collect library artifacts
-        if [ -d "libs/calculator/lib" ]; then
-          cp -r libs/calculator/lib ../artifacts/library
+        # Copy build artifacts if they exist (created by build scripts)
+        if [ -d "artifacts" ]; then
+          cp -r artifacts/* ../../artifacts/
         fi
         
-        # Collect application artifacts
-        if [ -f "application/calculator" ]; then
-          mkdir -p ../artifacts/application
-          cp application/calculator ../artifacts/application/
+        # Also collect specific items
+        if [ -d "../libs/calculator/lib" ]; then
+          mkdir -p ../../artifacts/library
+          cp -r ../libs/calculator/lib/* ../../artifacts/library/
+        fi
+        
+        if [ -f "../application/calculator" ]; then
+          mkdir -p ../../artifacts/application
+          cp ../application/calculator ../../artifacts/application/
         fi
         
         # Show what we collected
         echo "Artifacts collected:"
-        find ../artifacts -type f 2>/dev/null || echo "No artifacts found"
+        find ../../artifacts -type f 2>/dev/null || echo "No artifacts found"
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4

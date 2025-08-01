@@ -13,15 +13,29 @@ This repository contains the centralized build system that coordinates building 
 
 ### Key Features
 - ✅ **Automated multi-repository builds** triggered by source repository changes
-- ✅ **Comprehensive build scripts** for local development
+- ✅ **Manifest-based workspace setup** ensuring identical local and CI environments
+- ✅ **Comprehensive build scripts** for local development and CI
 - ✅ **GitHub Actions integration** with repository dispatch
-- ✅ **Cross-repository dependency management**
+- ✅ **Cross-repository dependency management** via Google Repo tool
 - ✅ **Artifact collection and reporting**
 
 ### Build Triggers
 - Push to `application` repository → triggers centralized build
 - Push to `static_library` repository → triggers centralized build
 - Manual workflow dispatch for testing and debugging
+
+### Required Setup for Repository Dispatch
+
+**Important**: To enable cross-repository triggering, you need to set up a Personal Access Token:
+
+1. **Create PAT**: Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
+   - Generate new token with permissions: `repo`, `workflow`
+
+2. **Add to Source Repositories**: Add the PAT as a secret named `PAT_TOKEN` in:
+   - `application` repository: Settings → Secrets and variables → Actions
+   - `static_library` repository: Settings → Secrets and variables → Actions
+
+3. **Why needed**: The default `GITHUB_TOKEN` cannot dispatch events to other repositories for security reasons
 
 ---
 
@@ -37,18 +51,37 @@ The repository includes a GitHub Actions workflow (`build.yml`) that provides ce
 - Manual workflow dispatch for testing
 
 **Build Process**:
-1. **Setup Environment** - Configures build tools and dependencies
-2. **Clone Repositories** - Fetches source repositories based on trigger
-3. **Build Static Library** - Compiles the calculator library
-4. **Build Application** - Compiles the main application with library dependency
-5. **Run Tests** - Executes test suites for both library and application
-6. **Collect Artifacts** - Gathers build outputs, logs, and reports
+1. **Install Google Repo Tool** - Sets up repo tool in CI environment
+2. **Setup Workspace with Manifest** - Uses manifest to create identical workspace structure
+3. **Sync Repositories** - Fetches all repositories via `repo sync`
+4. **Build Static Library** - Compiles the calculator library using build scripts
+5. **Build Application** - Compiles the main application with library dependency
+6. **Run Tests** - Executes test suites for both library and application using build scripts
+7. **Collect Artifacts** - Gathers build outputs, logs, and reports
 
 **Artifacts Created**:
 - Application executable (`calculator`)
 - Static library (`libcalculator.a`)
 - Build logs and test reports
 - Coverage and analysis reports
+
+### Local and CI Consistency
+
+**Identical Environments**: Both local development and CI use the same approach:
+
+| Aspect | Local Development | GitHub Actions CI |
+|--------|------------------|-------------------|
+| **Workspace Setup** | `repo init -u .../manifest.git` | `repo init -u .../manifest.git` |
+| **Repository Sync** | `repo sync` | `repo sync` |
+| **Build Scripts** | `./scripts/build.sh` | `./scripts/build.sh` |
+| **Directory Structure** | Standard repo workspace | Identical repo workspace |
+| **Dependency Management** | Via manifest definitions | Via manifest definitions |
+
+**Benefits**:
+- ✅ **Reproducible builds** - Same environment locally and in CI
+- ✅ **No CI-specific code** - Build scripts work identically everywhere  
+- ✅ **Easy debugging** - Local environment matches CI exactly
+- ✅ **Version consistency** - Manifest pins repository versions
 
 ### Monitoring Builds
 
@@ -204,17 +237,19 @@ build/
 
 ## Troubleshooting
 
+### Local Development Issues
+
 ```bash
 # If build fails, check logs
 cat build/logs/static_lib_build.log
 cat build/logs/application_build.log
 
 # Clean and retry
-./run.sh clean
-./run.sh build --verbose
+./run.sh build clean
+./run.sh build all --verbose
 
 # Check repository status
-./run.sh status
+./run.sh build status
 repo status
 
 # Resync repositories
@@ -224,3 +259,24 @@ repo sync
 chmod +x build/run.sh
 chmod +x build/scripts/*.sh
 ```
+
+### GitHub Actions Issues
+
+**Problem**: Build script fails with "Not in a repo workspace" error
+```
+❌ Not in a repo workspace. Please run this script from the build directory of a repo workspace.
+```
+
+**Solution**: The build scripts expect a Google Repo workspace structure. The GitHub Actions workflow creates a fake `.repo` directory to satisfy this validation:
+
+```yaml
+# Create fake .repo directory to satisfy build script workspace validation  
+mkdir -p ../.repo
+```
+
+**Problem**: "Resource not accessible by integration" error in trigger workflows
+
+**Solution**: Use Personal Access Token instead of GITHUB_TOKEN:
+1. Create PAT with `repo` and `workflow` permissions
+2. Add as `PAT_TOKEN` secret in source repositories
+3. Update trigger workflows to use `${{ secrets.PAT_TOKEN }}`
