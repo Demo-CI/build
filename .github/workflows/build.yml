@@ -28,7 +28,7 @@ on:
       artifacts_retention:
         description: 'Artifacts retention (days)'
         required: false
-        default: '30'
+        default: '5'
         type: string
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
     env:
       # Artifact retention configuration (in days)
       # Used for both build artifacts and logs
-      BUILD_ARTIFACTS_RETENTION: ${{ inputs.artifacts_retention || '30' }}
+      BUILD_ARTIFACTS_RETENTION: ${{ inputs.artifacts_retention || '5' }}
     
     steps:
     - name: Extract build configuration
