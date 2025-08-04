@@ -35,11 +35,8 @@ jobs:
   trigger-build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout build repository
-      uses: actions/checkout@v4
-    
     - name: Trigger centralized build
-      uses: ./.github/actions/trigger-build
+      uses: Demo-CI/build/.github/actions/trigger-build@main
       with:
         repository: ${{ inputs.repository }}
         dispatch_type: ${{ inputs.dispatch_type }}
