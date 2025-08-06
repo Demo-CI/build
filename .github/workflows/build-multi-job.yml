@@ -3,9 +3,7 @@ name: Multi-Repository Build (Multi-Job)
 # Performance Optimizations:
 # - Uses caching for metrics data sharing between jobs (faster than artifacts)
 # - Caches repo tool installation to avoid repeated downloads
-# - Caches workspace repositories based on manifest changes
-# - Caches APT package downloads for faster dependency installation
-# - Caches build objects for incremental builds (based on source file hashes)
+# - Caches APT packages for faster dependency installation (on subsequent runs)
 # - Parallel job execution: build-summary, status-check, and notify run in parallel
 
 run-name: "Demo-CI-${{ inputs.build_type || github.event.client_payload.build_type }}-${{ github.event.client_payload.build_date || 'YYYY-MM-DD' }}-${{ github.run_number }}"
@@ -185,14 +183,6 @@ jobs:
         path: ~/.local/bin/repo
         key: repo-tool-${{ runner.os }}-v1
     
-    - name: Cache workspace repositories
-      uses: actions/cache@v4
-      with:
-        path: workspace/.repo
-        key: workspace-repo-${{ runner.os }}-${{ hashFiles('manifest/default.xml') }}
-        restore-keys: |
-          workspace-repo-${{ runner.os }}-
-    
     - name: Setup workspace with manifest
       id: setup-workspace
       run: |
@@ -238,13 +228,13 @@ jobs:
         echo "workspace_setup,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
         echo "⏱️  Workspace setup took: ${STEP_DURATION}s"
     
-    - name: Cache build dependencies
+    - name: Cache APT packages  
       uses: actions/cache@v4
       with:
-        path: /var/cache/apt/archives
-        key: apt-cache-${{ runner.os }}-${{ hashFiles('**/Makefile') }}
+        path: /var/cache/apt/archives/*.deb
+        key: apt-packages-${{ runner.os }}-build-tools
         restore-keys: |
-          apt-cache-${{ runner.os }}-
+          apt-packages-${{ runner.os }}-
     
     - name: Install build dependencies
       id: install-deps
@@ -324,18 +314,6 @@ jobs:
         STEP_DURATION=$((STEP_END - STEP_START))
         echo "build_strategy,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
         echo "⏱️  Build strategy determination took: ${STEP_DURATION}s"
-    
-    - name: Cache build objects
-      uses: actions/cache@v4
-      with:
-        path: |
-          workspace/*/build/
-          workspace/*/*.o
-          workspace/*/lib/
-        key: build-cache-${{ runner.os }}-${{ steps.config.outputs.build_type }}-${{ hashFiles('workspace/**/*.cpp', 'workspace/**/*.h', 'workspace/**/Makefile') }}
-        restore-keys: |
-          build-cache-${{ runner.os }}-${{ steps.config.outputs.build_type }}-
-          build-cache-${{ runner.os }}-
     
     - name: Build static library
       id: build-library
