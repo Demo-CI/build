@@ -37,6 +37,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
+    # Job outputs to pass data to subsequent jobs
+    outputs:
+      build-type: ${{ steps.config.outputs.build_type }}
+      save-logs: ${{ steps.config.outputs.save_logs }}
+      source-repo: ${{ steps.config.outputs.source_repo }}
+      source-sha: ${{ steps.config.outputs.source_sha }}
+      source-ref: ${{ steps.config.outputs.source_ref }}
+      pr-number: ${{ steps.config.outputs.pr_number }}
+      trigger-reason: ${{ steps.config.outputs.trigger_reason }}
+      library-status: ${{ steps.build-library.outcome }}
+      application-status: ${{ steps.build-application.outcome }}
+      tests-status: ${{ steps.run-tests.outcome }}
+      build-start-time: ${{ steps.metrics-init.outputs.build_start_time }}
+      build-date: ${{ steps.metrics-init.outputs.build_date }}
+    
     env:
       # Artifact retention configuration (in days)
       # Used for both build artifacts and logs
@@ -563,16 +578,22 @@ jobs:
         fi
         
         echo "- **Performance Metrics:** Build timing data included in this summary" >> $GITHUB_STEP_SUMMARY
+
+  # Job for final status validation
+  status-check:
+    needs: build
+    if: always()  # Run even if build job fails
+    runs-on: ubuntu-latest
     
+    steps:
     - name: Final build status check
-      if: always()
       run: |
         echo "=== Final Build Status Check ==="
         
-        # Check individual step outcomes
-        LIBRARY_STATUS="${{ steps.build-library.outcome }}"
-        APPLICATION_STATUS="${{ steps.build-application.outcome }}"
-        TESTS_STATUS="${{ steps.run-tests.outcome }}"
+        # Check individual step outcomes from build job
+        LIBRARY_STATUS="${{ needs.build.outputs.library-status }}"
+        APPLICATION_STATUS="${{ needs.build.outputs.application-status }}"
+        TESTS_STATUS="${{ needs.build.outputs.tests-status }}"
         
         echo "📊 Step Outcomes:"
         echo "  - Library: $LIBRARY_STATUS"
@@ -601,99 +622,28 @@ jobs:
         else
           echo "✅ Build SUCCEEDED - All critical steps passed"
         fi
+
+  # Job for posting build results to source PR
+  notify:
+    needs: status-check
+    if: always() && github.event_name == 'repository_dispatch' && needs.build.outputs.pr-number != ''
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout for custom action
+      uses: actions/checkout@v4
     
     - name: Post build results to source PR
-      if: always() && github.event_name == 'repository_dispatch' && steps.config.outputs.pr_number != ''
-      uses: actions/github-script@v7
+      uses: ./.github/actions/post-build-results
       with:
         github-token: ${{ secrets.PAT_TOKEN }}
-        script: |
-          const sourceRepo = '${{ steps.config.outputs.source_repo }}';
-          const prNumber = '${{ steps.config.outputs.pr_number }}';
-          const buildType = '${{ steps.config.outputs.build_type }}';
-          const saveLogs = '${{ steps.config.outputs.save_logs }}';
-          const buildStatus = '${{ job.status }}';
-          const runId = '${{ github.run_id }}';
-          const runNumber = '${{ github.run_number }}';
-          const artifactRetention = '${{ env.BUILD_ARTIFACTS_RETENTION }}';
-          
-          // Calculate total build time
-          const buildStart = '${{ steps.metrics-init.outputs.build_start_time }}';
-          const buildEnd = Math.floor(Date.now() / 1000);
-          const totalBuildTime = buildEnd - buildStart;
-          const buildTimeMinutes = Math.round(totalBuildTime / 60 * 100) / 100;
-          
-          // Get individual step results
-          const libraryStatus = '${{ steps.build-library.outcome }}';
-          const applicationStatus = '${{ steps.build-application.outcome }}';
-          const testsStatus = '${{ steps.run-tests.outcome }}';
-          
-          // Parse repository owner and name
-          const [owner, repo] = sourceRepo.split('/');
-          
-          // Determine overall status
-          let statusEmoji, statusMessage, buildResult;
-          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
-          
-          if (hasFailures) {
-            statusEmoji = '❌';
-            statusMessage = 'Build failed. Please check the logs for details.';
-            buildResult = 'Failed';
-          } else if (buildStatus === 'success') {
-            statusEmoji = '✅';
-            statusMessage = 'Build completed successfully!';
-            buildResult = 'Success';
-          } else {
-            statusEmoji = '⚠️';
-            statusMessage = 'Build completed with warnings.';
-            buildResult = 'Warning';
-          }
-          
-          // Build detailed results
-          const getStepStatus = (status) => {
-            switch(status) {
-              case 'success': return '✅ Success';
-              case 'failure': return '❌ Failed';
-              case 'skipped': return '⏭️ Skipped';
-              default: return '❓ Unknown';
-            }
-          };
-          
-          // Build the comment body (using concatenation to avoid template literal escaping issues)
-          const commentBody = 
-          "## " + statusEmoji + " Centralized Build " + buildResult + "\n\n" +
-          "**Build Configuration:**\n" +
-          "- **Type:** `" + buildType + "`\n" +
-          "- **Save Logs:** `" + saveLogs + "`\n" +
-          "- **Duration:** `" + totalBuildTime + "s (" + buildTimeMinutes + " min)`\n" +
-          "- **Run:** [#" + runNumber + "](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n\n" +
-          "**Build Steps:**\n" +
-          "- **Static Library:** " + getStepStatus(libraryStatus) + "\n" +
-          "- **Application:** " + getStepStatus(applicationStatus) + "\n" +
-          "- **Tests:** " + getStepStatus(testsStatus) + "\n\n" +
-          "**Summary:**\n" +
-          statusMessage + "\n\n" +
-          "**Artifacts:**\n" +
-          "- 📦 Build artifacts available for " + artifactRetention + " days\n" +
-          (saveLogs === 'true' ? '- 📝 Detailed build logs saved (including timing metrics)\n' : '- 📝 Standard logging only\n') +
-          "\n" +
-          "**Actions:**\n" +
-          "- [View detailed build logs](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
-          "- [Download artifacts](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
-          "- [Performance metrics](https://github.com/Demo-CI/build/actions/runs/" + runId + ") included in job summary\n\n" +
-          "---\n" +
-          "*This comment was automatically generated by the centralized build system.*";
-          
-          try {
-            await github.rest.issues.createComment({
-              owner: owner,
-              repo: repo,
-              issue_number: parseInt(prNumber),
-              body: commentBody
-            });
-            
-            console.log('Posted build results to PR #' + prNumber + ' in ' + sourceRepo);
-          } catch (error) {
-            console.error('Failed to post comment to source PR:', error.message);
-            // Don't fail the workflow if commenting fails
-          }
+        source-repo: ${{ needs.build.outputs.source-repo }}
+        pr-number: ${{ needs.build.outputs.pr-number }}
+        build-type: ${{ needs.build.outputs.build-type }}
+        save-logs: ${{ needs.build.outputs.save-logs }}
+        build-status: ${{ needs.build.result }}
+        library-status: ${{ needs.build.outputs.library-status }}
+        application-status: ${{ needs.build.outputs.application-status }}
+        tests-status: ${{ needs.build.outputs.tests-status }}
+        build-start-time: ${{ needs.build.outputs.build-start-time }}
+        artifacts-retention: ${{ inputs.artifacts_retention || '5' }}
