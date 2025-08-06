@@ -1,0 +1,204 @@
+name: 'Build Summary'
+description: 'Generates a comprehensive build summary with metrics, timeline, and results'
+inputs:
+  build-type:
+    description: 'Build type (release/debug)'
+    required: true
+  save-logs:
+    description: 'Whether logs were saved as artifacts'
+    required: true
+  artifacts-retention:
+    description: 'Artifacts retention period in days'
+    required: true
+  trigger-reason:
+    description: 'Reason for the build trigger'
+    required: true
+  build-start-time:
+    description: 'Build start timestamp (Unix seconds)'
+    required: true
+  source-repo:
+    description: 'Source repository (if applicable)'
+    required: false
+    default: 'unknown'
+  source-ref:
+    description: 'Source branch/ref (if applicable)'
+    required: false
+    default: 'unknown'
+  source-sha:
+    description: 'Source SHA (if applicable)'
+    required: false
+    default: 'unknown'
+  library-status:
+    description: 'Library build step outcome'
+    required: true
+  application-status:
+    description: 'Application build step outcome'
+    required: true
+  tests-status:
+    description: 'Tests step outcome'
+    required: true
+  metrics-file:
+    description: 'Path to the metrics CSV file'
+    required: true
+
+outputs:
+  summary-generated:
+    description: 'Whether the summary was successfully generated'
+    value: ${{ steps.generate-summary.outputs.summary-generated }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate build summary
+      id: generate-summary
+      shell: bash
+      run: |
+        echo "=== Generating Build Summary ==="
+        
+        # Calculate total build time
+        BUILD_END=$(date +%s)
+        BUILD_START=${{ inputs.build-start-time }}
+        TOTAL_BUILD_TIME=$((BUILD_END - BUILD_START))
+        
+        # Finalize metrics
+        echo "build_complete,$BUILD_START,$BUILD_END,$TOTAL_BUILD_TIME,success" >> ${{ inputs.metrics-file }}
+        
+        echo "## 🚀 Build Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Configuration Table
+        echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Type | \`${{ inputs.build-type }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Verbose Logs | \`${{ inputs.save-logs }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Artifacts Retention | \`${{ inputs.artifacts-retention }} days\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Trigger Reason | ${{ inputs.trigger-reason }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Total Build Time | \`${TOTAL_BUILD_TIME}s ($(echo "scale=2; $TOTAL_BUILD_TIME/60" | bc -l) min)\` |" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.source-repo }}" != "unknown" ]]; then
+          echo "| Source Repository | \`${{ inputs.source-repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Branch | \`${{ inputs.source-ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source SHA | \`${{ inputs.source-sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Results Table
+        echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Dynamic status based on step outcomes
+        if [[ "${{ inputs.library-status }}" == "success" ]]; then
+          echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.library-status }}" == "failure" ]]; then
+          echo "| Static Library | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.library-status }}" == "skipped" ]]; then
+          echo "| Static Library | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Static Library | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ inputs.application-status }}" == "success" ]]; then
+          echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.application-status }}" == "failure" ]]; then
+          echo "| Application | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.application-status }}" == "skipped" ]]; then
+          echo "| Application | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Application | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ inputs.tests-status }}" == "success" ]]; then
+          echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.tests-status }}" == "failure" ]]; then
+          echo "| Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ inputs.tests-status }}" == "skipped" ]]; then
+          echo "| Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Tests | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Performance Metrics Table
+        echo "### ⏱️ Performance Metrics" >> $GITHUB_STEP_SUMMARY
+        echo "| Step | Duration | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Parse metrics file and create table
+        if [ -f "${{ inputs.metrics-file }}" ]; then
+          # Skip header line and process metrics
+          tail -n +2 "${{ inputs.metrics-file }}" | while IFS=',' read -r step start_time end_time duration status; do
+            if [ -n "$duration" ] && [ "$duration" != "" ]; then
+              # Format duration
+              if [ "$duration" -lt 60 ]; then
+                duration_display="${duration}s"
+              else
+                minutes=$((duration / 60))
+                seconds=$((duration % 60))
+                duration_display="${minutes}m ${seconds}s"
+              fi
+              
+              # Format status
+              case "$status" in
+                "success") status_icon="✅" ;;
+                "failure") status_icon="❌" ;;
+                "skipped") status_icon="⏭️" ;;
+                *) status_icon="❓" ;;
+              esac
+              
+              # Format step name
+              step_name=$(echo "$step" | tr '_' ' ' | sed 's/\b\w/\U&/g')
+              
+              echo "| $step_name | $duration_display | $status_icon $status |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Timeline Chart (ASCII)
+        echo "### 📈 Build Timeline" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "Build Timeline (seconds from start):" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "${{ inputs.metrics-file }}" ]; then
+          BUILD_START_TIME=${{ inputs.build-start-time }}
+          
+          # Create a simple timeline
+          tail -n +2 "${{ inputs.metrics-file }}" | while IFS=',' read -r step start_time end_time duration status; do
+            if [ -n "$duration" ] && [ "$duration" != "" ]; then
+              relative_start=$((start_time - BUILD_START_TIME))
+              relative_end=$((end_time - BUILD_START_TIME))
+              
+              # Format step name
+              step_name=$(echo "$step" | tr '_' ' ')
+              
+              # Create bar representation (simplified)
+              printf "%-20s [%3ds -> %3ds] (%ds) %s\n" \
+                "$step_name" "$relative_start" "$relative_end" "$duration" \
+                "$([ "$status" = "success" ] && echo "✓" || echo "✗")" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        fi
+        
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Artifacts Information
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Artifacts:** Available for ${{ inputs.artifacts-retention }} days" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.save-logs }}" == "true" ]]; then
+          echo "- **Build Logs:** Detailed logs saved for ${{ inputs.artifacts-retention }} days" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "- **Performance Metrics:** Build timing data included in this summary" >> $GITHUB_STEP_SUMMARY
+        
+        # Set output
+        echo "summary-generated=true" >> $GITHUB_OUTPUT
+        echo "✅ Build summary generated successfully"

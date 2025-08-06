@@ -449,150 +449,20 @@ jobs:
     
     - name: Build summary
       if: always()
-      run: |
-        # Calculate total build time
-        BUILD_END=$(date +%s)
-        BUILD_START=${{ steps.metrics-init.outputs.build_start_time }}
-        TOTAL_BUILD_TIME=$((BUILD_END - BUILD_START))
-        
-        # Finalize metrics
-        echo "build_complete,$BUILD_START,$BUILD_END,$TOTAL_BUILD_TIME,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
-        
-        echo "## 🚀 Build Complete" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Build Configuration Table
-        echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
-        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
-        echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Build Type | \`${{ steps.config.outputs.build_type }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| Verbose Logs | \`${{ steps.config.outputs.save_logs }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| Artifacts Retention | \`${{ env.BUILD_ARTIFACTS_RETENTION }} days\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| Trigger Reason | ${{ steps.config.outputs.trigger_reason }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Total Build Time | \`${TOTAL_BUILD_TIME}s ($(echo "scale=2; $TOTAL_BUILD_TIME/60" | bc -l) min)\` |" >> $GITHUB_STEP_SUMMARY
-        
-        if [[ "${{ steps.config.outputs.source_repo }}" != "unknown" ]]; then
-          echo "| Source Repository | \`${{ steps.config.outputs.source_repo }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Source Branch | \`${{ steps.config.outputs.source_ref }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Source SHA | \`${{ steps.config.outputs.source_sha }}\` |" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Build Results Table
-        echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
-        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-        
-        # Dynamic status based on step outcomes
-        if [[ "${{ steps.build-library.outcome }}" == "success" ]]; then
-          echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.build-library.outcome }}" == "failure" ]]; then
-          echo "| Static Library | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.build-library.outcome }}" == "skipped" ]]; then
-          echo "| Static Library | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "| Static Library | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [[ "${{ steps.build-application.outcome }}" == "success" ]]; then
-          echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.build-application.outcome }}" == "failure" ]]; then
-          echo "| Application | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.build-application.outcome }}" == "skipped" ]]; then
-          echo "| Application | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "| Application | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [[ "${{ steps.run-tests.outcome }}" == "success" ]]; then
-          echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.run-tests.outcome }}" == "failure" ]]; then
-          echo "| Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-        elif [[ "${{ steps.run-tests.outcome }}" == "skipped" ]]; then
-          echo "| Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "| Tests | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Performance Metrics Table
-        echo "### ⏱️ Performance Metrics" >> $GITHUB_STEP_SUMMARY
-        echo "| Step | Duration | Status |" >> $GITHUB_STEP_SUMMARY
-        echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-        
-        # Parse metrics file and create table
-        if [ -f "${{ steps.metrics-init.outputs.metrics_file }}" ]; then
-          # Skip header line and process metrics
-          tail -n +2 "${{ steps.metrics-init.outputs.metrics_file }}" | while IFS=',' read -r step start_time end_time duration status; do
-            if [ -n "$duration" ] && [ "$duration" != "" ]; then
-              # Format duration
-              if [ "$duration" -lt 60 ]; then
-                duration_display="${duration}s"
-              else
-                minutes=$((duration / 60))
-                seconds=$((duration % 60))
-                duration_display="${minutes}m ${seconds}s"
-              fi
-              
-              # Format status
-              case "$status" in
-                "success") status_icon="✅" ;;
-                "failure") status_icon="❌" ;;
-                "skipped") status_icon="⏭️" ;;
-                *) status_icon="❓" ;;
-              esac
-              
-              # Format step name
-              step_name=$(echo "$step" | tr '_' ' ' | sed 's/\b\w/\U&/g')
-              
-              echo "| $step_name | $duration_display | $status_icon $status |" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Build Timeline Chart (ASCII)
-        echo "### 📈 Build Timeline" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "Build Timeline (seconds from start):" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "${{ steps.metrics-init.outputs.metrics_file }}" ]; then
-          BUILD_START_TIME=${{ steps.metrics-init.outputs.build_start_time }}
-          
-          # Create a simple timeline
-          tail -n +2 "${{ steps.metrics-init.outputs.metrics_file }}" | while IFS=',' read -r step start_time end_time duration status; do
-            if [ -n "$duration" ] && [ "$duration" != "" ]; then
-              relative_start=$((start_time - BUILD_START_TIME))
-              relative_end=$((end_time - BUILD_START_TIME))
-              
-              # Format step name
-              step_name=$(echo "$step" | tr '_' ' ')
-              
-              # Create bar representation (simplified)
-              printf "%-20s [%3ds -> %3ds] (%ds) %s\n" \
-                "$step_name" "$relative_start" "$relative_end" "$duration" \
-                "$([ "$status" = "success" ] && echo "✓" || echo "✗")" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-        fi
-        
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Artifacts Information
-        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-        echo "- **Build Artifacts:** Available for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
-        
-        if [[ "${{ steps.config.outputs.save_logs }}" == "true" ]]; then
-          echo "- **Build Logs:** Detailed logs saved for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "- **Performance Metrics:** Build timing data included in this summary" >> $GITHUB_STEP_SUMMARY
+      uses: ./.github/actions/build-summary
+      with:
+        build-type: ${{ steps.config.outputs.build_type }}
+        save-logs: ${{ steps.config.outputs.save_logs }}
+        artifacts-retention: ${{ env.BUILD_ARTIFACTS_RETENTION }}
+        trigger-reason: ${{ steps.config.outputs.trigger_reason }}
+        build-start-time: ${{ steps.metrics-init.outputs.build_start_time }}
+        source-repo: ${{ steps.config.outputs.source_repo }}
+        source-ref: ${{ steps.config.outputs.source_ref }}
+        source-sha: ${{ steps.config.outputs.source_sha }}
+        library-status: ${{ steps.build-library.outcome }}
+        application-status: ${{ steps.build-application.outcome }}
+        tests-status: ${{ steps.run-tests.outcome }}
+        metrics-file: ${{ steps.metrics-init.outputs.metrics_file }}
 
   # Job for final status validation
   status-check:
