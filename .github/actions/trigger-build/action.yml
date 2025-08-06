@@ -197,6 +197,9 @@ runs:
       with:
         github-token: ${{ inputs.github_token }}
         script: |
+          // Generate current date in yyyy-mm-dd format
+          const currentDate = new Date().toISOString().split('T')[0];
+          
           const payload = {
             repository: '${{ inputs.repository }}',
             build_type: '${{ steps.determine.outputs.build_type }}',
@@ -205,10 +208,12 @@ runs:
             sha: context.sha,
             ref_name: context.ref.replace('refs/heads/', ''),
             actor: context.actor,
-            pr_number: context.issue?.number?.toString() || ''
+            pr_number: context.issue?.number?.toString() || '',
+            build_date: currentDate
           };
           
           console.log('Dispatching to build repository:', payload);
+          console.log('Build date:', currentDate);
           
           try {
             await github.rest.repos.createDispatchEvent({

@@ -1,6 +1,6 @@
 name: Multi-Repository Build
 
-run-name: "Demo-CI-${{ inputs.build_type || github.event.client_payload.build_type || 'release' }}-RunNumber${{ github.run_number }}-${{ github.event.repository.pushed_at || github.event.repository.updated_at || github.event.repository.created_at }}"
+run-name: "Demo-CI-${{ inputs.build_type || github.event.client_payload.build_type }}-${{ github.event.client_payload.build_date || 'YYYY-MM-DD' }}-${{ github.run_number }}"
 
 on:
   # Repository dispatch from source repositories
@@ -50,7 +50,18 @@ jobs:
       run: |
         echo "=== Initializing Build Metrics ==="
         BUILD_START=$(date +%s)
+        BUILD_DATE="${{ github.event.client_payload.build_date || ''}}"
+        
+        # Generate current date if not provided (for manual triggers)
+        if [[ -z "$BUILD_DATE" ]]; then
+          BUILD_DATE=$(date '+%Y-%m-%d')
+          echo "🗓️  Generated build date: $BUILD_DATE"
+        else
+          echo "🗓️  Received build date: $BUILD_DATE"
+        fi
+        
         echo "build_start_time=$BUILD_START" >> $GITHUB_OUTPUT
+        echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
         echo "🕐 Build started at: $(date -d @$BUILD_START '+%Y-%m-%d %H:%M:%S UTC')"
         
         # Create metrics file
@@ -274,7 +285,7 @@ jobs:
         else
           BUILD_STATUS="failure"
         fi
-        
+
         # Record step completion
         STEP_END=$(date +%s)
         STEP_DURATION=$((STEP_END - STEP_START))
