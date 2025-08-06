@@ -447,22 +447,45 @@ jobs:
         retention-days: ${{ env.BUILD_ARTIFACTS_RETENTION }}
         if-no-files-found: warn
     
-    - name: Build summary
+    - name: Upload metrics for summary
       if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-metrics-${{ github.run_number }}
+        path: ${{ steps.metrics-init.outputs.metrics_file }}
+        retention-days: 1
+
+  # Job for generating comprehensive build summary
+  build-summary:
+    needs: build
+    if: always()  # Run even if build job fails
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout for build summary action
+      uses: actions/checkout@v4
+    
+    - name: Download build metrics
+      uses: actions/download-artifact@v4
+      with:
+        name: build-metrics-${{ github.run_number }}
+        path: /tmp/metrics/
+    
+    - name: Generate build summary
       uses: ./.github/actions/build-summary
       with:
-        build-type: ${{ steps.config.outputs.build_type }}
-        save-logs: ${{ steps.config.outputs.save_logs }}
-        artifacts-retention: ${{ env.BUILD_ARTIFACTS_RETENTION }}
-        trigger-reason: ${{ steps.config.outputs.trigger_reason }}
-        build-start-time: ${{ steps.metrics-init.outputs.build_start_time }}
-        source-repo: ${{ steps.config.outputs.source_repo }}
-        source-ref: ${{ steps.config.outputs.source_ref }}
-        source-sha: ${{ steps.config.outputs.source_sha }}
-        library-status: ${{ steps.build-library.outcome }}
-        application-status: ${{ steps.build-application.outcome }}
-        tests-status: ${{ steps.run-tests.outcome }}
-        metrics-file: ${{ steps.metrics-init.outputs.metrics_file }}
+        build-type: ${{ needs.build.outputs.build-type }}
+        save-logs: ${{ needs.build.outputs.save-logs }}
+        artifacts-retention: ${{ inputs.artifacts_retention || '5' }}
+        trigger-reason: ${{ needs.build.outputs.trigger-reason }}
+        build-start-time: ${{ needs.build.outputs.build-start-time }}
+        source-repo: ${{ needs.build.outputs.source-repo }}
+        source-ref: ${{ needs.build.outputs.source-ref }}
+        source-sha: ${{ needs.build.outputs.source-sha }}
+        library-status: ${{ needs.build.outputs.library-status }}
+        application-status: ${{ needs.build.outputs.application-status }}
+        tests-status: ${{ needs.build.outputs.tests-status }}
+        metrics-file: /tmp/metrics/build_metrics.csv
 
   # Job for final status validation
   status-check:
