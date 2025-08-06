@@ -69,8 +69,34 @@ runs:
           const runNumber = '${{ inputs.run-number }}';
           const artifactRetention = '${{ inputs.artifacts-retention }}';
           
+          // Debug logging
+          console.log('=== Debug Information ===');
+          console.log(`Source Repo: "${sourceRepo}"`);
+          console.log(`PR Number: "${prNumber}"`);
+          console.log(`Build Type: "${buildType}"`);
+          console.log(`Build Status: "${buildStatus}"`);
+          console.log(`Run ID: "${runId}"`);
+          console.log(`Run Number: "${runNumber}"`);
+          
+          // Validate inputs
+          if (!sourceRepo || sourceRepo === 'unknown' || sourceRepo.trim() === '') {
+            console.error(`❌ Invalid source repository: "${sourceRepo}"`);
+            console.log('Build results cannot be posted without a valid source repository');
+            core.setOutput('comment-posted', 'false');
+            core.setOutput('comment-url', '');
+            return;
+          }
+          
+          if (!prNumber || prNumber.trim() === '') {
+            console.error(`❌ Invalid PR number: "${prNumber}"`);
+            console.log('Build results cannot be posted without a valid PR number');
+            core.setOutput('comment-posted', 'false');
+            core.setOutput('comment-url', '');
+            return;
+          }
+          
           // Calculate total build time
-          const buildStart = '${{ inputs.build-start-time }}';
+          const buildStart = parseInt('${{ inputs.build-start-time }}');
           const buildEnd = Math.floor(Date.now() / 1000);
           const totalBuildTime = buildEnd - buildStart;
           const buildTimeMinutes = Math.round(totalBuildTime / 60 * 100) / 100;
@@ -81,7 +107,13 @@ runs:
           const testsStatus = '${{ inputs.tests-status }}';
           
           // Parse repository owner and name
-          const [owner, repo] = sourceRepo.split('/');
+          const repoParts = sourceRepo.split('/');
+          if (repoParts.length !== 2) {
+            throw new Error(`Invalid repository format: "${sourceRepo}". Expected format: "owner/repo"`);
+          }
+          const [owner, repo] = repoParts;
+          
+          console.log(`Parsed repository - Owner: "${owner}", Repo: "${repo}"`);
           
           // Determine overall status
           const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
@@ -157,12 +189,13 @@ runs:
             
             console.log(`Successfully posted comment: ${response.data.html_url}`);
             
-            // Set outputs using core.setOutput
+            // Set outputs
             core.setOutput('comment-posted', 'true');
             core.setOutput('comment-url', response.data.html_url);
             
           } catch (error) {
             console.error(`Failed to post comment: ${error.message}`);
+            console.error(`Error details:`, error);
             
             // Set outputs for failure case
             core.setOutput('comment-posted', 'false');

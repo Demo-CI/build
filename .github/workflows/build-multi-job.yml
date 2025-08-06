@@ -92,6 +92,20 @@ jobs:
         STEP_START=$(date +%s)
         echo "=== Extracting Build Configuration ==="
         
+        # Debug repository dispatch payload
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          echo "🔍 Repository Dispatch Debug:"
+          echo "  Event Action: ${{ github.event.action }}"
+          echo "  Build Type: '${{ github.event.client_payload.build_type }}'"
+          echo "  Save Logs: '${{ github.event.client_payload.save_logs }}'"
+          echo "  Repository: '${{ github.event.client_payload.repository }}'"
+          echo "  SHA: '${{ github.event.client_payload.sha }}'"
+          echo "  Ref Name: '${{ github.event.client_payload.ref_name }}'"
+          echo "  PR Number: '${{ github.event.client_payload.pr_number }}'"
+          echo "  Build Date: '${{ github.event.client_payload.build_date }}'"
+          echo "  Commit Message: '${{ github.event.client_payload.commit_message }}'"
+        fi
+        
         # Default values
         BUILD_TYPE="release"
         SAVE_LOGS="false"
@@ -117,6 +131,7 @@ jobs:
           echo "📁 Source Repo: $SOURCE_REPO"
           echo "🔗 Source SHA: $SOURCE_SHA"
           echo "🌿 Source Branch: $SOURCE_REF"
+          echo "📝 PR Number: '$PR_NUMBER'"
           echo "💬 Reason: $TRIGGER_REASON"
         fi
         
@@ -625,11 +640,27 @@ jobs:
 
   # Job for posting build results to source PR
   notify:
-    needs: status-check
+    needs: [build, status-check]
     if: always() && github.event_name == 'repository_dispatch' && needs.build.outputs.pr-number != ''
     runs-on: ubuntu-latest
     
     steps:
+    - name: Debug values
+      run: |
+        echo "=== Debug Notify Job ==="
+        echo "Event name: ${{ github.event_name }}"
+        echo "Source repo: '${{ needs.build.outputs.source-repo }}'"
+        echo "PR number: '${{ needs.build.outputs.pr-number }}'"
+        echo "Build result: '${{ needs.build.result }}'"
+        echo "Status-check result: '${{ needs.status-check.result }}'"
+        echo "Build type: '${{ needs.build.outputs.build-type }}'"
+        echo "Save logs: '${{ needs.build.outputs.save-logs }}'"
+        echo "Library status: '${{ needs.build.outputs.library-status }}'"
+        echo "Application status: '${{ needs.build.outputs.application-status }}'"
+        echo "Tests status: '${{ needs.build.outputs.tests-status }}'"
+        echo "Build start time: '${{ needs.build.outputs.build-start-time }}'"
+        echo "Artifacts retention: '${{ inputs.artifacts_retention || '5' }}'"
+    
     - name: Checkout for custom action
       uses: actions/checkout@v4
     

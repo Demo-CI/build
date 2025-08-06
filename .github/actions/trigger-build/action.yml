@@ -200,6 +200,14 @@ runs:
           // Generate current date in yyyy-mm-dd format
           const currentDate = new Date().toISOString().split('T')[0];
           
+          // Get PR number from context
+          let prNumber = '';
+          if (context.eventName === 'pull_request') {
+            prNumber = context.payload.pull_request?.number?.toString() || '';
+          } else if (context.eventName === 'issue_comment') {
+            prNumber = context.issue?.number?.toString() || '';
+          }
+          
           const payload = {
             repository: '${{ inputs.repository }}',
             build_type: '${{ steps.determine.outputs.build_type }}',
@@ -208,12 +216,14 @@ runs:
             sha: context.sha,
             ref_name: context.ref.replace('refs/heads/', ''),
             actor: context.actor,
-            pr_number: context.issue?.number?.toString() || '',
+            pr_number: prNumber,
             build_date: currentDate
           };
           
           console.log('Dispatching to build repository:', payload);
           console.log('Build date:', currentDate);
+          console.log('PR number:', prNumber);
+          console.log('Event name:', context.eventName);
           
           try {
             await github.rest.repos.createDispatchEvent({
