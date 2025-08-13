@@ -39,7 +39,7 @@ on:
 
 jobs:
   build:
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: buildjet-16vcpu-ubuntu-2204
     
     # Job outputs to pass data to subsequent jobs
     outputs:
@@ -462,7 +462,7 @@ jobs:
   build-summary:
     needs: build
     if: always()  # Run even if build job fails
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: buildjet-16vcpu-ubuntu-2204
     
     steps:
     - name: Checkout for build summary action
@@ -495,7 +495,7 @@ jobs:
   status-check:
     needs: build
     if: always()  # Run even if build job fails
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: buildjet-16vcpu-ubuntu-2204
     
     steps:
     - name: Final build status check
@@ -539,7 +539,7 @@ jobs:
   notify:
     needs: [build, status-check]
     if: always() && github.event_name == 'repository_dispatch' && needs.build.outputs.pr-number != ''
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: buildjet-16vcpu-ubuntu-2204
     
     steps:
     - name: Debug values
