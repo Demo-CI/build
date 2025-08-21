@@ -1,0 +1,46 @@
+name: Reusable Trigger Centralized Build
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: 'Source repository name (e.g., Demo-CI/application)'
+        required: true
+        type: string
+      dispatch_type:
+        description: 'Repository dispatch type (e.g., application-updated)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        type: string
+        default: 'Manual trigger'
+      build_type:
+        description: 'Build type (debug/release)'
+        required: false
+        type: string
+        default: 'release'
+      save_logs:
+        description: 'Save build logs'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      PAT_TOKEN:
+        description: 'GitHub Personal Access Token for repository dispatch'
+        required: true
+
+jobs:
+  trigger-build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Trigger centralized build
+      uses: Demo-CI/build/.github/actions/trigger-build@main
+      with:
+        repository: ${{ inputs.repository }}
+        dispatch_type: ${{ inputs.dispatch_type }}
+        github_token: ${{ secrets.PAT_TOKEN }}
+        manual_reason: ${{ inputs.reason }}
+        manual_build_type: ${{ inputs.build_type }}
+        manual_save_logs: ${{ inputs.save_logs }}

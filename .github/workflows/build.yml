@@ -1,0 +1,699 @@
+name: Multi-Repository Build
+
+run-name: "Demo-CI-${{ inputs.build_type || github.event.client_payload.build_type }}-${{ github.event.client_payload.build_date || 'YYYY-MM-DD' }}-${{ github.run_number }}"
+
+on:
+  # Repository dispatch from source repositories
+  repository_dispatch:
+    types: [application-updated, static-library-updated]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'What to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - library
+        - application
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+      artifacts_retention:
+        description: 'Artifacts retention (days)'
+        required: false
+        default: '5'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    env:
+      # Artifact retention configuration (in days)
+      # Used for both build artifacts and logs
+      BUILD_ARTIFACTS_RETENTION: ${{ inputs.artifacts_retention || '5' }}
+      # Build start time for metrics
+      BUILD_START_TIME: ${{ github.event.repository.pushed_at }}
+    
+    steps:
+    - name: Initialize build metrics
+      id: metrics-init
+      run: |
+        echo "=== Initializing Build Metrics ==="
+        BUILD_START=$(date +%s)
+        BUILD_DATE="${{ github.event.client_payload.build_date || ''}}"
+        
+        # Generate current date if not provided (for manual triggers)
+        if [[ -z "$BUILD_DATE" ]]; then
+          BUILD_DATE=$(date '+%Y-%m-%d')
+          echo "🗓️  Generated build date: $BUILD_DATE"
+        else
+          echo "🗓️  Received build date: $BUILD_DATE"
+        fi
+        
+        echo "build_start_time=$BUILD_START" >> $GITHUB_OUTPUT
+        echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+        echo "🕐 Build started at: $(date -d @$BUILD_START '+%Y-%m-%d %H:%M:%S UTC')"
+        
+        # Create metrics file
+        mkdir -p /tmp/metrics
+        echo "step,start_time,end_time,duration_seconds,status" > /tmp/metrics/build_metrics.csv
+        echo "build_init,$BUILD_START,," >> /tmp/metrics/build_metrics.csv
+        
+        echo "metrics_file=/tmp/metrics/build_metrics.csv" >> $GITHUB_OUTPUT
+    
+    - name: Extract build configuration
+      id: config
+      run: |
+        STEP_START=$(date +%s)
+        echo "=== Extracting Build Configuration ==="
+        
+        # Default values
+        BUILD_TYPE="release"
+        SAVE_LOGS="false"
+        TRIGGER_REASON="Manual build"
+        SOURCE_REPO="unknown"
+        SOURCE_SHA="unknown"
+        SOURCE_REF="unknown"
+        PR_NUMBER=""
+        
+        # Extract from repository dispatch payload
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          BUILD_TYPE="${{ github.event.client_payload.build_type || 'release' }}"
+          SAVE_LOGS="${{ github.event.client_payload.save_logs || 'false' }}"
+          TRIGGER_REASON="${{ github.event.client_payload.commit_message || 'Repository dispatch trigger' }}"
+          SOURCE_REPO="${{ github.event.client_payload.repository || 'unknown' }}"
+          SOURCE_SHA="${{ github.event.client_payload.sha || 'unknown' }}"
+          SOURCE_REF="${{ github.event.client_payload.ref_name || 'unknown' }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number || '' }}"
+          
+          echo "📡 Repository Dispatch Event: ${{ github.event.action }}"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "📝 Save Logs: $SAVE_LOGS"
+          echo "📁 Source Repo: $SOURCE_REPO"
+          echo "🔗 Source SHA: $SOURCE_SHA"
+          echo "🌿 Source Branch: $SOURCE_REF"
+          echo "💬 Reason: $TRIGGER_REASON"
+        fi
+        
+        # Extract from manual workflow dispatch
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          SAVE_LOGS="false"  # Manual triggers don't have save_logs input yet
+          TRIGGER_REASON="Manual workflow dispatch"
+          
+          echo "🎮 Manual Workflow Dispatch"
+          echo "🏗️  Build Type: $BUILD_TYPE"
+          echo "🎯 Target: ${{ inputs.build_target || 'all' }}"
+        fi
+        
+        # Set outputs for use in subsequent steps
+        echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+        echo "save_logs=$SAVE_LOGS" >> $GITHUB_OUTPUT
+        echo "trigger_reason=$TRIGGER_REASON" >> $GITHUB_OUTPUT
+        echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+        echo "source_sha=$SOURCE_SHA" >> $GITHUB_OUTPUT
+        echo "source_ref=$SOURCE_REF" >> $GITHUB_OUTPUT
+        echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+        
+        echo "" 
+        echo "=== Configuration Summary ==="
+        echo "Build Type: $BUILD_TYPE"
+        echo "Save Logs: $SAVE_LOGS"
+        echo "Trigger: $TRIGGER_REASON"
+        echo "📦 Artifacts Retention: ${{ env.BUILD_ARTIFACTS_RETENTION }} days"
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "config,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Configuration extraction took: ${STEP_DURATION}s"
+    
+    - name: Checkout build repository
+      uses: actions/checkout@v4
+    
+    - name: Setup workspace with manifest
+      id: setup-workspace
+      run: |
+        STEP_START=$(date +%s)
+        echo "=== Setting up workspace using manifest ==="
+        
+        # Install Google Repo tool
+        mkdir -p ~/.local/bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+        chmod +x ~/.local/bin/repo
+        export PATH="$HOME/.local/bin:$PATH"
+        
+        # Verify repo tool installation
+        repo --version
+        
+        # Configure git (required by repo)
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Create workspace using manifest
+        mkdir workspace
+        cd workspace
+        
+        # Initialize repo workspace with manifest
+        repo init -u https://github.com/Demo-CI/manifest.git -m default.xml
+        
+        # Sync all repositories
+        repo sync -j4
+        
+        # Verify workspace structure
+        echo "=== Workspace structure ==="
+        ls -la
+        echo "=== Repository list ==="
+        repo list
+        echo "=== Repository status ==="
+        repo status
+        
+        echo "Workspace setup complete using manifest"
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "workspace_setup,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Workspace setup took: ${STEP_DURATION}s"
+    
+    - name: Install build dependencies
+      id: install-deps
+      run: |
+        STEP_START=$(date +%s)
+        echo "=== Installing build dependencies ==="
+        
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cppcheck \
+          clang-format \
+          valgrind \
+          doxygen \
+          graphviz
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "install_deps,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Dependency installation took: ${STEP_DURATION}s"
+    
+    - name: Determine build strategy
+      id: strategy
+      run: |
+        STEP_START=$(date +%s)
+        echo "=== Determining build strategy ==="
+        
+        if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+          trigger_type="${{ github.event.action }}"
+          echo "Repository dispatch trigger: $trigger_type"
+          
+          case "$trigger_type" in
+            "application-updated")
+              echo "Building library + application (application updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "static-library-updated")
+              echo "Building library + application (library updated)"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unknown trigger, building all"
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        else
+          # Manual trigger
+          build_target="${{ github.event.inputs.build_target || 'all' }}"
+          echo "Manual trigger: $build_target"
+          
+          case "$build_target" in
+            "library")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=false" >> $GITHUB_OUTPUT
+              ;;
+            "application")
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+            "all"|*)
+              echo "build_library=true" >> $GITHUB_OUTPUT
+              echo "build_application=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        fi
+        
+        echo "Build strategy determined:"
+        echo "- Build library: $(grep 'build_library=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        echo "- Build application: $(grep 'build_application=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "build_strategy,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Build strategy determination took: ${STEP_DURATION}s"
+    
+    - name: Build static library
+      id: build-library
+      if: steps.strategy.outputs.build_library == 'true'
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        STEP_START=$(date +%s)
+        cd workspace/build
+        echo "=== Building Static Library ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # Use the build script to build the library only
+        if ./scripts/build.sh build; then
+          BUILD_STATUS="success"
+        else
+          BUILD_STATUS="failure"
+        fi
+
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "build_library,$STEP_START,$STEP_END,$STEP_DURATION,$BUILD_STATUS" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Library build took: ${STEP_DURATION}s (Status: $BUILD_STATUS)"
+        
+        # Exit with appropriate code if build failed
+        if [ "$BUILD_STATUS" = "failure" ]; then
+          exit 1
+        fi
+    
+    - name: Build application
+      id: build-application
+      if: steps.strategy.outputs.build_application == 'true'
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        STEP_START=$(date +%s)
+        cd workspace/build
+        echo "=== Building Application ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # The build script will build both library and application
+        if [[ "${{ steps.strategy.outputs.build_library }}" != "true" ]]; then
+          # If library wasn't built in previous step, build everything
+          BUILD_RESULT=$(./scripts/build.sh build && echo "success" || echo "failure")
+        else
+          BUILD_RESULT="success"  # Application is built as part of library build
+        fi
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "build_application,$STEP_START,$STEP_END,$STEP_DURATION,$BUILD_RESULT" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Application build took: ${STEP_DURATION}s (Status: $BUILD_RESULT)"
+        
+        # Exit with appropriate code if build failed
+        if [ "$BUILD_RESULT" = "failure" ]; then
+          exit 1
+        fi
+    
+    - name: Run tests
+      id: run-tests
+      continue-on-error: true
+      env:
+        BUILD_TYPE: ${{ steps.config.outputs.build_type == 'debug' && 'Debug' || 'Release' }}
+        VERBOSE: ${{ steps.config.outputs.save_logs == 'true' && 'true' || 'false' }}
+      run: |
+        STEP_START=$(date +%s)
+        cd workspace/build
+        echo "=== Running Tests ==="
+        echo "🏗️  Build Type: $BUILD_TYPE"
+        echo "📝 Verbose Logging: $VERBOSE"
+        
+        # Run tests using the build script
+        if ./scripts/build.sh test; then
+          TEST_STATUS="success"
+        else
+          TEST_STATUS="failure"
+        fi
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "run_tests,$STEP_START,$STEP_END,$STEP_DURATION,$TEST_STATUS" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Test execution took: ${STEP_DURATION}s (Status: $TEST_STATUS)"
+        
+        # Exit with appropriate code if tests failed
+        if [ "$TEST_STATUS" = "failure" ]; then
+          exit 1
+        fi
+    
+    - name: Collect artifacts
+      id: collect-artifacts
+      run: |
+        STEP_START=$(date +%s)
+        cd workspace/build
+        echo "=== Collecting Build Artifacts ==="
+        
+        # Create artifacts directory
+        mkdir -p ../../artifacts
+        
+        # Copy build artifacts if they exist (created by build scripts)
+        if [ -d "artifacts" ]; then
+          cp -r artifacts/* ../../artifacts/
+        fi
+        
+        # Also collect specific items
+        if [ -d "../libs/calculator/lib" ]; then
+          mkdir -p ../../artifacts/library
+          cp -r ../libs/calculator/lib/* ../../artifacts/library/
+        fi
+        
+        if [ -f "../application/calculator" ]; then
+          mkdir -p ../../artifacts/application
+          cp ../application/calculator ../../artifacts/application/
+        fi
+        
+        # Show what we collected
+        echo "Artifacts collected:"
+        find ../../artifacts -type f 2>/dev/null || echo "No artifacts found"
+        
+        # Record step completion
+        STEP_END=$(date +%s)
+        STEP_DURATION=$((STEP_END - STEP_START))
+        echo "collect_artifacts,$STEP_START,$STEP_END,$STEP_DURATION,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        echo "⏱️  Artifact collection took: ${STEP_DURATION}s"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-${{ github.run_number }}
+        path: artifacts/
+        retention-days: ${{ env.BUILD_ARTIFACTS_RETENTION }}
+    
+    - name: Upload build logs
+      if: steps.config.outputs.save_logs == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.run_number }}
+        path: |
+          workspace/build/logs/
+          workspace/build/build.log
+          workspace/*/build/
+          ${{ steps.metrics-init.outputs.metrics_file }}
+        retention-days: ${{ env.BUILD_ARTIFACTS_RETENTION }}
+        if-no-files-found: warn
+    
+    - name: Build summary
+      if: always()
+      run: |
+        # Calculate total build time
+        BUILD_END=$(date +%s)
+        BUILD_START=${{ steps.metrics-init.outputs.build_start_time }}
+        TOTAL_BUILD_TIME=$((BUILD_END - BUILD_START))
+        
+        # Finalize metrics
+        echo "build_complete,$BUILD_START,$BUILD_END,$TOTAL_BUILD_TIME,success" >> ${{ steps.metrics-init.outputs.metrics_file }}
+        
+        echo "## 🚀 Build Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Configuration Table
+        echo "### 🔧 Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Type | \`${{ steps.config.outputs.build_type }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Verbose Logs | \`${{ steps.config.outputs.save_logs }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Artifacts Retention | \`${{ env.BUILD_ARTIFACTS_RETENTION }} days\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Trigger Reason | ${{ steps.config.outputs.trigger_reason }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Total Build Time | \`${TOTAL_BUILD_TIME}s ($(echo "scale=2; $TOTAL_BUILD_TIME/60" | bc -l) min)\` |" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ steps.config.outputs.source_repo }}" != "unknown" ]]; then
+          echo "| Source Repository | \`${{ steps.config.outputs.source_repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Branch | \`${{ steps.config.outputs.source_ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source SHA | \`${{ steps.config.outputs.source_sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Results Table
+        echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Dynamic status based on step outcomes
+        if [[ "${{ steps.build-library.outcome }}" == "success" ]]; then
+          echo "| Static Library | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-library.outcome }}" == "failure" ]]; then
+          echo "| Static Library | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-library.outcome }}" == "skipped" ]]; then
+          echo "| Static Library | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Static Library | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ steps.build-application.outcome }}" == "success" ]]; then
+          echo "| Application | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-application.outcome }}" == "failure" ]]; then
+          echo "| Application | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.build-application.outcome }}" == "skipped" ]]; then
+          echo "| Application | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Application | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ steps.run-tests.outcome }}" == "success" ]]; then
+          echo "| Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.run-tests.outcome }}" == "failure" ]]; then
+          echo "| Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ steps.run-tests.outcome }}" == "skipped" ]]; then
+          echo "| Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Tests | ❓ Unknown |" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Performance Metrics Table
+        echo "### ⏱️ Performance Metrics" >> $GITHUB_STEP_SUMMARY
+        echo "| Step | Duration | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Parse metrics file and create table
+        if [ -f "${{ steps.metrics-init.outputs.metrics_file }}" ]; then
+          # Skip header line and process metrics
+          tail -n +2 "${{ steps.metrics-init.outputs.metrics_file }}" | while IFS=',' read -r step start_time end_time duration status; do
+            if [ -n "$duration" ] && [ "$duration" != "" ]; then
+              # Format duration
+              if [ "$duration" -lt 60 ]; then
+                duration_display="${duration}s"
+              else
+                minutes=$((duration / 60))
+                seconds=$((duration % 60))
+                duration_display="${minutes}m ${seconds}s"
+              fi
+              
+              # Format status
+              case "$status" in
+                "success") status_icon="✅" ;;
+                "failure") status_icon="❌" ;;
+                "skipped") status_icon="⏭️" ;;
+                *) status_icon="❓" ;;
+              esac
+              
+              # Format step name
+              step_name=$(echo "$step" | tr '_' ' ' | sed 's/\b\w/\U&/g')
+              
+              echo "| $step_name | $duration_display | $status_icon $status |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build Timeline Chart (ASCII)
+        echo "### 📈 Build Timeline" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "Build Timeline (seconds from start):" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "${{ steps.metrics-init.outputs.metrics_file }}" ]; then
+          BUILD_START_TIME=${{ steps.metrics-init.outputs.build_start_time }}
+          
+          # Create a simple timeline
+          tail -n +2 "${{ steps.metrics-init.outputs.metrics_file }}" | while IFS=',' read -r step start_time end_time duration status; do
+            if [ -n "$duration" ] && [ "$duration" != "" ]; then
+              relative_start=$((start_time - BUILD_START_TIME))
+              relative_end=$((end_time - BUILD_START_TIME))
+              
+              # Format step name
+              step_name=$(echo "$step" | tr '_' ' ')
+              
+              # Create bar representation (simplified)
+              printf "%-20s [%3ds -> %3ds] (%ds) %s\n" \
+                "$step_name" "$relative_start" "$relative_end" "$duration" \
+                "$([ "$status" = "success" ] && echo "✓" || echo "✗")" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        fi
+        
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Artifacts Information
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Artifacts:** Available for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ steps.config.outputs.save_logs }}" == "true" ]]; then
+          echo "- **Build Logs:** Detailed logs saved for ${{ env.BUILD_ARTIFACTS_RETENTION }} days" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Build Logs:** Standard logging (not saved as artifacts)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "- **Performance Metrics:** Build timing data included in this summary" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Final build status check
+      if: always()
+      run: |
+        echo "=== Final Build Status Check ==="
+        
+        # Check individual step outcomes
+        LIBRARY_STATUS="${{ steps.build-library.outcome }}"
+        APPLICATION_STATUS="${{ steps.build-application.outcome }}"
+        TESTS_STATUS="${{ steps.run-tests.outcome }}"
+        
+        echo "📊 Step Outcomes:"
+        echo "  - Library: $LIBRARY_STATUS"
+        echo "  - Application: $APPLICATION_STATUS" 
+        echo "  - Tests: $TESTS_STATUS"
+        
+        # Determine if any critical step failed
+        FAILED_STEPS=""
+        
+        if [[ "$LIBRARY_STATUS" == "failure" ]]; then
+          FAILED_STEPS="$FAILED_STEPS library"
+        fi
+        
+        if [[ "$APPLICATION_STATUS" == "failure" ]]; then
+          FAILED_STEPS="$FAILED_STEPS application"
+        fi
+        
+        if [[ "$TESTS_STATUS" == "failure" ]]; then
+          FAILED_STEPS="$FAILED_STEPS tests"
+        fi
+        
+        if [[ -n "$FAILED_STEPS" ]]; then
+          echo "❌ Build FAILED - Failed steps:$FAILED_STEPS"
+          echo "🚨 Setting workflow status to failed"
+          exit 1
+        else
+          echo "✅ Build SUCCEEDED - All critical steps passed"
+        fi
+    
+    - name: Post build results to source PR
+      if: always() && github.event_name == 'repository_dispatch' && steps.config.outputs.pr_number != ''
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.PAT_TOKEN }}
+        script: |
+          const sourceRepo = '${{ steps.config.outputs.source_repo }}';
+          const prNumber = '${{ steps.config.outputs.pr_number }}';
+          const buildType = '${{ steps.config.outputs.build_type }}';
+          const saveLogs = '${{ steps.config.outputs.save_logs }}';
+          const buildStatus = '${{ job.status }}';
+          const runId = '${{ github.run_id }}';
+          const runNumber = '${{ github.run_number }}';
+          const artifactRetention = '${{ env.BUILD_ARTIFACTS_RETENTION }}';
+          
+          // Calculate total build time
+          const buildStart = '${{ steps.metrics-init.outputs.build_start_time }}';
+          const buildEnd = Math.floor(Date.now() / 1000);
+          const totalBuildTime = buildEnd - buildStart;
+          const buildTimeMinutes = Math.round(totalBuildTime / 60 * 100) / 100;
+          
+          // Get individual step results
+          const libraryStatus = '${{ steps.build-library.outcome }}';
+          const applicationStatus = '${{ steps.build-application.outcome }}';
+          const testsStatus = '${{ steps.run-tests.outcome }}';
+          
+          // Parse repository owner and name
+          const [owner, repo] = sourceRepo.split('/');
+          
+          // Determine overall status
+          let statusEmoji, statusMessage, buildResult;
+          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
+          
+          if (hasFailures) {
+            statusEmoji = '❌';
+            statusMessage = 'Build failed. Please check the logs for details.';
+            buildResult = 'Failed';
+          } else if (buildStatus === 'success') {
+            statusEmoji = '✅';
+            statusMessage = 'Build completed successfully!';
+            buildResult = 'Success';
+          } else {
+            statusEmoji = '⚠️';
+            statusMessage = 'Build completed with warnings.';
+            buildResult = 'Warning';
+          }
+          
+          // Build detailed results
+          const getStepStatus = (status) => {
+            switch(status) {
+              case 'success': return '✅ Success';
+              case 'failure': return '❌ Failed';
+              case 'skipped': return '⏭️ Skipped';
+              default: return '❓ Unknown';
+            }
+          };
+          
+          // Build the comment body (using concatenation to avoid template literal escaping issues)
+          const commentBody = 
+          "## " + statusEmoji + " Centralized Build " + buildResult + "\n\n" +
+          "**Build Configuration:**\n" +
+          "- **Type:** `" + buildType + "`\n" +
+          "- **Save Logs:** `" + saveLogs + "`\n" +
+          "- **Duration:** `" + totalBuildTime + "s (" + buildTimeMinutes + " min)`\n" +
+          "- **Run:** [#" + runNumber + "](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n\n" +
+          "**Build Steps:**\n" +
+          "- **Static Library:** " + getStepStatus(libraryStatus) + "\n" +
+          "- **Application:** " + getStepStatus(applicationStatus) + "\n" +
+          "- **Tests:** " + getStepStatus(testsStatus) + "\n\n" +
+          "**Summary:**\n" +
+          statusMessage + "\n\n" +
+          "**Artifacts:**\n" +
+          "- 📦 Build artifacts available for " + artifactRetention + " days\n" +
+          (saveLogs === 'true' ? '- 📝 Detailed build logs saved (including timing metrics)\n' : '- 📝 Standard logging only\n') +
+          "\n" +
+          "**Actions:**\n" +
+          "- [View detailed build logs](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
+          "- [Download artifacts](https://github.com/Demo-CI/build/actions/runs/" + runId + ")\n" +
+          "- [Performance metrics](https://github.com/Demo-CI/build/actions/runs/" + runId + ") included in job summary\n\n" +
+          "---\n" +
+          "*This comment was automatically generated by the centralized build system.*";
+          
+          try {
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: parseInt(prNumber),
+              body: commentBody
+            });
+            
+            console.log('Posted build results to PR #' + prNumber + ' in ' + sourceRepo);
+          } catch (error) {
+            console.error('Failed to post comment to source PR:', error.message);
+            // Don't fail the workflow if commenting fails
+          }

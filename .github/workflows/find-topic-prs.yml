@@ -1,0 +1,134 @@
+name: Find Topic PRs
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Topic to search for (e.g., my-topic)'
+        required: true
+        type: string
+
+env:
+  TOPIC_SEARCH: ${{ github.event.inputs.topic || 'my-topic' }}
+
+jobs:
+  find-topic-prs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    
+    steps:
+      - name: Search for Topic PRs across organization
+        id: search
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          echo "🔍 Searching for 'Topic: $TOPIC_SEARCH' across organization: $ORG_NAME"
+          
+          # Get all repositories in the organization
+          repos=$(gh api "orgs/$ORG_NAME/repos" --paginate --jq '.[].name')
+          
+          found_prs=0
+          found_prs_data=""
+          
+          for repo in $repos; do
+            echo "Checking: $repo"
+            
+            # Search in PR descriptions
+            prs_with_topic_in_body=$(gh api "repos/$ORG_NAME/$repo/pulls" \
+              --paginate \
+              --jq ".[] | select(.body != null and (.body | contains(\"Topic: $TOPIC_SEARCH\"))) | {number: .number, title: .title, url: .html_url}")
+            
+            if [ ! -z "$prs_with_topic_in_body" ]; then
+              # Process each PR found in descriptions
+              while IFS= read -r pr_info; do
+                if [ ! -z "$pr_info" ] && [ "$pr_info" != "null" ]; then
+                  pr_number=$(echo "$pr_info" | jq -r '.number')
+                  pr_title=$(echo "$pr_info" | jq -r '.title')
+                  pr_url=$(echo "$pr_info" | jq -r '.url')
+                  echo "  ✅ Found in description: $repo #$pr_number"
+                  
+                  # Escape pipes in title and append to results
+                  clean_title=$(echo "$pr_title" | sed 's/|/\\|/g')
+                  found_prs_data="$found_prs_data$repo|#$pr_number|$clean_title|$pr_url|Description"$'\n'
+                  found_prs=$((found_prs + 1))
+                fi
+              done <<< "$(echo "$prs_with_topic_in_body" | jq -c '.')"
+            fi
+            
+            # Search in PR comments
+            all_prs=$(gh api "repos/$ORG_NAME/$repo/pulls" --paginate --jq '.[].number')
+            
+            for pr_number in $all_prs; do
+              comments_with_topic=$(gh api "repos/$ORG_NAME/$repo/issues/$pr_number/comments" \
+                --paginate \
+                --jq ".[] | select(.body != null and (.body | contains(\"Topic: $TOPIC_SEARCH\")))")
+              
+              if [ ! -z "$comments_with_topic" ]; then
+                pr_info=$(gh api "repos/$ORG_NAME/$repo/pulls/$pr_number" --jq '{title: .title, url: .html_url}')
+                pr_title=$(echo "$pr_info" | jq -r '.title')
+                pr_url=$(echo "$pr_info" | jq -r '.url')
+                echo "  ✅ Found in comment: $repo #$pr_number"
+                
+                # Escape pipes in title and append to results
+                clean_title=$(echo "$pr_title" | sed 's/|/\\|/g')
+                found_prs_data="$found_prs_data$repo|#$pr_number|$clean_title|$pr_url|Comment"$'\n'
+                found_prs=$((found_prs + 1))
+              fi
+            done
+          done
+          
+          echo "Search completed. Found $found_prs PRs."
+          
+          # Set outputs for next step
+          echo "found_count=$found_prs" >> $GITHUB_OUTPUT
+          
+          # Save multi-line data to environment file for next step
+          {
+            echo 'FOUND_PRS_DATA<<EOF'
+            echo "$found_prs_data"
+            echo 'EOF'
+          } >> $GITHUB_ENV
+
+      - name: Summary
+        run: |
+          echo "## 🔍 Topic Search Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Topic searched:** \`Topic: $TOPIC_SEARCH\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Organization:** ${{ github.repository_owner }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Search completed at:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get the results from previous step using environment variables
+          found_count="${{ steps.search.outputs.found_count }}"
+          echo "**Total PRs found:** $found_count" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$found_count" -gt 0 ]; then
+            echo "### 📋 Found PRs" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Repository | PR # | Title | Found In | URL |" >> $GITHUB_STEP_SUMMARY
+            echo "|------------|------|-------|----------|-----|" >> $GITHUB_STEP_SUMMARY
+            
+            # Process the found PRs data
+            echo "$FOUND_PRS_DATA" | while IFS='|' read -r repo pr_num title url location; do
+              if [ ! -z "$repo" ]; then
+                # Truncate title if too long (already escaped in search step)
+                if [ ${#title} -gt 50 ]; then
+                  title="${title:0:47}..."
+                fi
+                echo "| $repo | $pr_num | $title | $location | [View PR]($url) |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Search completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ℹ️ No Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No PRs found with the specified topic \`Topic: $TOPIC_SEARCH\`" >> $GITHUB_STEP_SUMMARY
+          fi

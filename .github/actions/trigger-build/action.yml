@@ -1,0 +1,265 @@
+name: 'Trigger Centralized Build'
+description: 'Parse JSON comments and trigger centralized build'
+inputs:
+  repository:
+    description: 'Source repository name'
+    required: true
+  dispatch_type:
+    description: 'Repository dispatch type'
+    required: true
+  github_token:
+    description: 'GitHub token for repository dispatch'
+    required: true
+  manual_reason:
+    description: 'Manual trigger reason'
+    required: false
+    default: 'Manual trigger'
+  manual_build_type:
+    description: 'Manual build type'
+    required: false
+    default: 'release'
+  manual_save_logs:
+    description: 'Manual save logs setting'
+    required: false
+    default: 'false'
+
+outputs:
+  should_build:
+    description: 'Whether build should be triggered'
+    value: ${{ steps.determine.outputs.should_build }}
+  build_type:
+    description: 'Build type to use'
+    value: ${{ steps.determine.outputs.build_type }}
+  save_logs:
+    description: 'Whether to save logs'
+    value: ${{ steps.determine.outputs.save_logs }}
+  reason:
+    description: 'Build reason'
+    value: ${{ steps.determine.outputs.reason }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Parse JSON comment (if applicable)
+      id: parse
+      if: github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '{')
+      uses: actions/github-script@v7
+      with:
+        script: |
+          console.log('🔍 Starting JSON comment parsing...');
+          console.log(`Event: ${context.eventName}`);
+          console.log(`Issue number: ${context.issue?.number}`);
+          console.log(`PR context: ${context.payload.issue?.pull_request ? 'Yes' : 'No'}`);
+          
+          const comment = context.payload.comment.body;
+          console.log(`Comment preview: ${comment.substring(0, 100)}...`);
+          
+          // Look for JSON blocks in the comment
+          const jsonMatch = comment.match(/```json\s*(\{[\s\S]*?\})\s*```/) || 
+                           comment.match(/(\{[\s\S]*?\})/);
+          
+          if (!jsonMatch) {
+            console.log('❌ No JSON found in comment');
+            core.setOutput('should_build', 'false');
+            return;
+          }
+          
+          console.log(`📋 Found JSON: ${jsonMatch[1]}`);
+          
+          try {
+            const buildConfig = JSON.parse(jsonMatch[1]);
+            console.log('Parsed build config:', buildConfig);
+            
+            // Make action field optional - if not specified, assume 'build'
+            const action = buildConfig.action || 'build';
+            if (action !== 'build') {
+              console.log(`Not a build action (action: ${action}), skipping`);
+              core.setOutput('should_build', 'false');
+              return;
+            }
+            
+            // Extract configuration
+            const buildType = buildConfig.build_type || 'release';
+            const saveLogs = buildConfig.save_logs === true || buildConfig.save_logs === 'true';
+            const reason = buildConfig.reason || 'JSON comment trigger';
+            
+            console.log('📋 Parsed configuration:');
+            console.log(`  - Action: ${action}`);
+            console.log(`  - Build Type: ${buildType}`);
+            console.log(`  - Save Logs: ${saveLogs}`);
+            console.log(`  - Reason: ${reason}`);
+            
+            // Validate build_type
+            if (!['debug', 'release'].includes(buildType)) {
+              throw new Error(`Invalid build_type: ${buildType}. Must be 'debug' or 'release'`);
+            }
+            
+            // Set outputs
+            core.setOutput('should_build', 'true');
+            core.setOutput('build_type', buildType);
+            core.setOutput('save_logs', saveLogs.toString());
+            core.setOutput('reason', reason);
+            
+            console.log('✅ Valid build configuration found');
+            console.log(`🔧 Build Type: ${buildType}`);
+            console.log(`📝 Save Logs: ${saveLogs}`);
+            console.log(`💬 Reason: ${reason}`);
+            
+          } catch (error) {
+            console.error('❌ Failed to parse JSON:', error.message);
+            
+            // Post error comment
+            const errorComment = `
+            ❌ **Invalid Build Configuration**
+            
+            Error parsing JSON comment: \`${error.message}\`
+            
+            **Valid format:**
+            \`\`\`json
+            {
+              "build_type": "debug",
+              "save_logs": true,
+              "reason": "Testing debug build"
+            }
+            \`\`\`
+            
+            **Parameters:**
+            - \`action\`: "build" (optional, default: "build")
+            - \`build_type\`: "debug" or "release" (optional, default: "release")
+            - \`save_logs\`: true or false (optional, default: false)
+            - \`reason\`: Description text (optional)
+            
+            **Your JSON was:** \`${jsonMatch ? jsonMatch[1] : 'not found'}\`
+            `;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: errorComment
+            });
+            
+            core.setOutput('should_build', 'false');
+          }
+
+    - name: Determine build configuration
+      id: determine
+      shell: bash
+      run: |
+        echo "=== Determining Build Configuration ==="
+        echo "🔍 Event Name: ${{ github.event_name }}"
+        echo "🔍 Parse Step Outcome: ${{ steps.parse.outcome }}"
+        echo "🔍 Parse Should Build: ${{ steps.parse.outputs.should_build }}"
+        
+        case "${{ github.event_name }}" in
+          "pull_request")
+            echo "📝 PR trigger - building with defaults"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "build_type=release" >> $GITHUB_OUTPUT
+            echo "save_logs=false" >> $GITHUB_OUTPUT
+            echo "reason=Pull request trigger" >> $GITHUB_OUTPUT
+            ;;
+          "issue_comment")
+            if [[ "${{ steps.parse.outputs.should_build }}" == "true" ]]; then
+              echo "📝 JSON comment trigger - using parsed config"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+              echo "build_type=${{ steps.parse.outputs.build_type }}" >> $GITHUB_OUTPUT
+              echo "save_logs=${{ steps.parse.outputs.save_logs }}" >> $GITHUB_OUTPUT
+              echo "reason=${{ steps.parse.outputs.reason }}" >> $GITHUB_OUTPUT
+            else
+              echo "📝 Comment without valid JSON - skipping"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+            ;;
+          "workflow_dispatch")
+            echo "📝 Manual trigger - using inputs"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "build_type=${{ inputs.manual_build_type }}" >> $GITHUB_OUTPUT
+            echo "save_logs=${{ inputs.manual_save_logs }}" >> $GITHUB_OUTPUT
+            echo "reason=${{ inputs.manual_reason }}" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "❌ Unknown trigger - skipping"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            ;;
+        esac
+        
+        echo ""
+        echo "=== Final Configuration ==="
+        echo "🏗️  Should Build: $(grep 'should_build=' $GITHUB_OUTPUT | cut -d'=' -f2)"
+        echo "🔧 Build Type: $(grep 'build_type=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
+        echo "📝 Save Logs: $(grep 'save_logs=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
+        echo "💬 Reason: $(grep 'reason=' $GITHUB_OUTPUT | cut -d'=' -f2 || echo 'not set')"
+
+    - name: Trigger centralized build
+      if: steps.determine.outputs.should_build == 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github_token }}
+        script: |
+          // Generate current date in yyyy-mm-dd format
+          const currentDate = new Date().toISOString().split('T')[0];
+          
+          // Get PR number from context
+          let prNumber = '';
+          if (context.eventName === 'pull_request') {
+            prNumber = context.payload.pull_request?.number?.toString() || '';
+          } else if (context.eventName === 'issue_comment') {
+            prNumber = context.issue?.number?.toString() || '';
+          }
+          
+          const payload = {
+            repository: '${{ inputs.repository }}',
+            build_type: '${{ steps.determine.outputs.build_type }}',
+            save_logs: '${{ steps.determine.outputs.save_logs }}',
+            commit_message: '${{ steps.determine.outputs.reason }}',
+            sha: context.sha,
+            ref_name: context.ref.replace('refs/heads/', ''),
+            actor: context.actor,
+            pr_number: prNumber,
+            build_date: currentDate
+          };
+          
+          console.log('Dispatching to build repository:', payload);
+          console.log('Build date:', currentDate);
+          console.log('PR number:', prNumber);
+          console.log('Event name:', context.eventName);
+          
+          try {
+            await github.rest.repos.createDispatchEvent({
+              owner: 'Demo-CI',
+              repo: 'build',
+              event_type: '${{ inputs.dispatch_type }}',
+              client_payload: payload
+            });
+            
+            console.log('✅ Successfully triggered centralized build');
+            
+            // Post confirmation comment for JSON triggers
+            if (context.eventName === 'issue_comment' && context.issue?.number) {
+              const buildType = '${{ steps.determine.outputs.build_type }}';
+              const saveLogs = '${{ steps.determine.outputs.save_logs }}';
+              const reason = '${{ steps.determine.outputs.reason }}';
+              
+              const confirmComment = 
+              "✅ **Build Triggered Successfully**\n\n" +
+              "**Configuration:**\n" +
+              "- **Type:** `" + buildType + "`\n" +
+              "- **Save Logs:** `" + saveLogs + "`\n" +
+              "- **Reason:** " + reason + "\n\n" +
+              "🔗 **Monitor Progress:** [Centralized Build Workflows](https://github.com/Demo-CI/build/actions)\n\n" +
+              "---\n" +
+              "*Build results will be posted here automatically when complete.*";
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: confirmComment
+              });
+            }
+            
+          } catch (error) {
+            console.error('❌ Failed to trigger build:', error.message);
+            core.setFailed(`Failed to trigger centralized build: ${error.message}`);
+          }

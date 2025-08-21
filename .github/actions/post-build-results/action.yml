@@ -1,0 +1,206 @@
+name: 'Post Build Results to PR'
+description: 'Posts centralized build results as a comment to the source repository PR'
+inputs:
+  github-token:
+    description: 'GitHub token with permissions to comment on PRs in source repository'
+    required: true
+  source-repo:
+    description: 'Source repository in format owner/repo'
+    required: true
+  pr-number:
+    description: 'Pull request number in source repository'
+    required: true
+  build-type:
+    description: 'Build type (release/debug)'
+    required: true
+  save-logs:
+    description: 'Whether logs were saved as artifacts'
+    required: true
+  build-status:
+    description: 'Overall build job status'
+    required: true
+  library-status:
+    description: 'Library build step outcome'
+    required: true
+  application-status:
+    description: 'Application build step outcome'
+    required: true
+  tests-status:
+    description: 'Tests step outcome'
+    required: true
+  build-start-time:
+    description: 'Build start timestamp (Unix seconds)'
+    required: true
+  artifacts-retention:
+    description: 'Artifacts retention period in days'
+    required: true
+  run-id:
+    description: 'GitHub Actions run ID'
+    required: false
+    default: ${{ github.run_id }}
+  run-number:
+    description: 'GitHub Actions run number'
+    required: false
+    default: ${{ github.run_number }}
+
+outputs:
+  comment-posted:
+    description: 'Whether the comment was successfully posted'
+    value: ${{ steps.post-comment.outputs.comment-posted }}
+  comment-url:
+    description: 'URL of the posted comment (if successful)'
+    value: ${{ steps.post-comment.outputs.comment-url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Post build results to source PR
+      id: post-comment
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const sourceRepo = '${{ inputs.source-repo }}';
+          const prNumber = '${{ inputs.pr-number }}';
+          const buildType = '${{ inputs.build-type }}';
+          const saveLogs = '${{ inputs.save-logs }}';
+          const buildStatus = '${{ inputs.build-status }}';
+          const runId = '${{ inputs.run-id }}';
+          const runNumber = '${{ inputs.run-number }}';
+          const artifactRetention = '${{ inputs.artifacts-retention }}';
+          
+          // Debug logging
+          console.log('=== Debug Information ===');
+          console.log(`Source Repo: "${sourceRepo}"`);
+          console.log(`PR Number: "${prNumber}"`);
+          console.log(`Build Type: "${buildType}"`);
+          console.log(`Build Status: "${buildStatus}"`);
+          console.log(`Run ID: "${runId}"`);
+          console.log(`Run Number: "${runNumber}"`);
+          
+          // Validate inputs
+          if (!sourceRepo || sourceRepo === 'unknown' || sourceRepo.trim() === '') {
+            console.error(`❌ Invalid source repository: "${sourceRepo}"`);
+            console.log('Build results cannot be posted without a valid source repository');
+            core.setOutput('comment-posted', 'false');
+            core.setOutput('comment-url', '');
+            return;
+          }
+          
+          if (!prNumber || prNumber.trim() === '') {
+            console.error(`❌ Invalid PR number: "${prNumber}"`);
+            console.log('Build results cannot be posted without a valid PR number');
+            core.setOutput('comment-posted', 'false');
+            core.setOutput('comment-url', '');
+            return;
+          }
+          
+          // Calculate total build time
+          const buildStart = parseInt('${{ inputs.build-start-time }}');
+          const buildEnd = Math.floor(Date.now() / 1000);
+          const totalBuildTime = buildEnd - buildStart;
+          const buildTimeMinutes = Math.round(totalBuildTime / 60 * 100) / 100;
+          
+          // Get individual step results
+          const libraryStatus = '${{ inputs.library-status }}';
+          const applicationStatus = '${{ inputs.application-status }}';
+          const testsStatus = '${{ inputs.tests-status }}';
+          
+          // Parse repository owner and name
+          const repoParts = sourceRepo.split('/');
+          if (repoParts.length !== 2) {
+            throw new Error(`Invalid repository format: "${sourceRepo}". Expected format: "owner/repo"`);
+          }
+          const [owner, repo] = repoParts;
+          
+          console.log(`Parsed repository - Owner: "${owner}", Repo: "${repo}"`);
+          
+          // Determine overall status
+          const hasFailures = [libraryStatus, applicationStatus, testsStatus].includes('failure');
+          let statusEmoji, statusMessage, buildResult;
+          
+          if (hasFailures) {
+            statusEmoji = '❌';
+            statusMessage = 'Build failed. Please check the logs for details.';
+            buildResult = 'Failed';
+          } else if (buildStatus === 'success') {
+            statusEmoji = '✅';
+            statusMessage = 'Build completed successfully!';
+            buildResult = 'Success';
+          } else {
+            statusEmoji = '⚠️';
+            statusMessage = 'Build completed with warnings.';
+            buildResult = 'Warning';
+          }
+          
+          // Helper function to format step status
+          const getStepStatus = (status) => {
+            switch(status) {
+              case 'success': return '✅ Success';
+              case 'failure': return '❌ Failed';
+              case 'skipped': return '⏭️ Skipped';
+              default: return '❓ Unknown';
+            }
+          };
+          
+          // Build the comment body
+          const commentBody = [
+            `## ${statusEmoji} Centralized Build ${buildResult}`,
+            '',
+            '**Build Configuration:**',
+            `- **Type:** \`${buildType}\``,
+            `- **Save Logs:** \`${saveLogs}\``,
+            `- **Duration:** \`${totalBuildTime}s (${buildTimeMinutes} min)\``,
+            `- **Run:** [#${runNumber}](https://github.com/Demo-CI/build/actions/runs/${runId})`,
+            '',
+            '**Build Steps:**',
+            `- **Static Library:** ${getStepStatus(libraryStatus)}`,
+            `- **Application:** ${getStepStatus(applicationStatus)}`,
+            `- **Tests:** ${getStepStatus(testsStatus)}`,
+            '',
+            '**Summary:**',
+            statusMessage,
+            '',
+            '**Artifacts:**',
+            `- 📦 Build artifacts available for ${artifactRetention} days`,
+            saveLogs === 'true' 
+              ? '- 📝 Detailed build logs saved (including timing metrics)'
+              : '- 📝 Standard logging only',
+            '',
+            '**Actions:**',
+            `- [View detailed build logs](https://github.com/Demo-CI/build/actions/runs/${runId})`,
+            `- [Download artifacts](https://github.com/Demo-CI/build/actions/runs/${runId})`,
+            `- [Performance metrics](https://github.com/Demo-CI/build/actions/runs/${runId}) included in job summary`,
+            '',
+            '---',
+            '*This comment was automatically generated by the centralized build system.*'
+          ].join('\n');
+          
+          // Post the comment
+          console.log(`Posting build results to PR #${prNumber} in ${sourceRepo}`);
+          
+          try {
+            const response = await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: parseInt(prNumber),
+              body: commentBody
+            });
+            
+            console.log(`Successfully posted comment: ${response.data.html_url}`);
+            
+            // Set outputs
+            core.setOutput('comment-posted', 'true');
+            core.setOutput('comment-url', response.data.html_url);
+            
+          } catch (error) {
+            console.error(`Failed to post comment: ${error.message}`);
+            console.error(`Error details:`, error);
+            
+            // Set outputs for failure case
+            core.setOutput('comment-posted', 'false');
+            core.setOutput('comment-url', '');
+            
+            // Don't fail the workflow if commenting fails
+            console.log('Build results could not be posted to PR, but this will not fail the workflow');
+          }
